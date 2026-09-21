@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Meeting Copilot — overlay MVP</title>
+<style>
+  body { font-family: system-ui, sans-serif; background:#111; color:#eee; margin:0; padding:12px; }
+  #rec { color:#ff5555; font-weight:700; }
+  #log { margin-top:12px; display:flex; flex-direction:column; gap:8px; max-width:520px; }
+  .card { background:#1e1e1e; border:1px solid #333; border-radius:10px; padding:10px 12px; }
+  .card.say { border-left:4px solid #4ade80; }
+  .card.work { border-left:4px solid #60a5fa; }
+  .muted { color:#999; font-size:12px; }
+  button { background:#222; color:#eee; border:1px solid #444; border-radius:8px; padding:6px 10px; cursor:pointer; }
+</style>
+</head>
+<body>
+  <div><span id="rec">● TRANSCREVENDO (local)</span> <span class="muted" id="mode"></span></div>
+  <div class="muted">Overlay MVP — na V1 vira Tauri always-on-top. Conecta em <code>ws://localhost:8000/ws</code></div>
+  <div style="margin-top:8px">
+    <button onclick="connect()">Conectar WS</button>
+    <button onclick="demo()">Demo local (sem backend)</button>
+  </div>
+  <div id="log"></div>
+<script>
+let ws=null;
+function addCard(html, cls){ const d=document.createElement('div'); d.className='card '+cls; d.innerHTML=html; document.getElementById('log').prepend(d); }
+function connect(){
+  ws=new WebSocket('ws://localhost:8000/ws');
+  ws.onmessage=(e)=>{ const m=JSON.parse(e.data);
+    if(m.transcript) addCard('<b>'+m.transcript.speaker+':</b> '+m.transcript.text, '');
+    const ins=m.insight;
+    if(ins && ins.type==='insight'){
+      if(ins.kind==='lang_coach') addCard('<b>EN diga:</b><br>• '+ins.card.say_this.join('<br>• ')+'<br><span class=muted>'+ins.card.follow_up+' | '+ins.card.grammar_tip+'</span>', 'say');
+      if(ins.kind==='work_copilot') addCard('<b>'+ins.card.summary+'</b><br>Check: '+ins.card.to_check.join('; ')+'<br>Perguntar: '+ins.card.to_ask.join('; '), 'work');
+    }
+  };
+  ws.onopen=()=>addCard('WS conectado.', '');
+}
+function demo(){ addCard('<b>OTHERS:</b> What did you do during the weekend?',''); addCard('<b>EN diga:</b><br>• I stayed home most of the weekend, but I went out on Sunday.<br><span class=muted>How about you? | Past simple: stayed/went</span>','say'); }
+fetch('/health').then(r=>r.json()).then(j=>document.getElementById('mode').textContent='modo '+j.mode).catch(()=>{});
+</script>
+</body>
+</html>

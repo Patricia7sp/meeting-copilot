@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+data/sessions/*.jsonl
+data/sessions/*.md
+!.gitkeep
+.reversa/
+_reversa_sdd/
+_reversa_forward/

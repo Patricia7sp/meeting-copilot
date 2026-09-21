@@ -1,0 +1,25 @@
+# Copie para settings.yaml e ajuste
+app:
+  mode: auto            # english | work | auto
+  language_hint: "pt+en"
+  cooldown_seconds: 10  # anti-spam: max 1 insight a cada N seg
+  max_window_turns: 12
+  persist_sessions: true
+  data_dir: "./data/sessions"
+
+router:
+  # regras locais primeiro; LLM pequeno só na Entrega 3
+  min_words_to_consider: 4
+  filler_words: ["uhm", "ahn", "é...", "tipo", "hmm", "uh", "ah"]
+
+llm:
+  provider: none        # none | gemini | openai | groq | ollama
+  model: ""             # ex: gemini-2.0-flash, gpt-4o-mini, llama-3.3-70b-versatile
+  api_key_env: "LLM_API_KEY"
+  timeout_seconds: 8
+  # Se provider=none, usa templates locais (funciona offline, Entrega 1)
+
+privacy:
+  save_audio: false
+  save_transcript: true
+  show_recording_indicator: true
