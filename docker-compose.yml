@@ -8,7 +8,11 @@ services:
       - ./config:/app/config:ro
     environment:
       - ORCHESTRATOR_MODE=auto
-      - LLM_PROVIDER=none  # none | gemini | openai | groq | ollama
+      - LLM_PROVIDER=${LLM_PROVIDER:-none}  # none | openrouter | gemini | openai | groq | ollama
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-meta-llama/llama-3.3-70b-instruct:free}
+      - OPENROUTER_FALLBACKS=${OPENROUTER_FALLBACKS:-google/gemma-3-27b-it:free,qwen/qwen3-32b:free}
+      - OPENROUTER_TIMEOUT=${OPENROUTER_TIMEOUT:-12}
     depends_on:
       - qdrant
     command: uvicorn main:app --host 0.0.0.0 --port 8000

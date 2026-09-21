@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Meeting Copilot",
+  "version": "0.1.0",
+  "identifier": "com.copilot.meeting",
+  "build": {
+    "frontendDist": "../src",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "overlay",
+        "title": "Meeting Copilot",
+        "url": "index.html",
+        "width": 400,
+        "height": 620,
+        "minWidth": 320,
+        "minHeight": 400,
+        "alwaysOnTop": true,
+        "decorations": true,
+        "transparent": false,
+        "resizable": true,
+        "skipTaskbar": false,
+        "position": { "x": 0, "y": 0 }
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ws://localhost:8000 http://localhost:8000 https://openrouter.ai; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg", "deb"],
+    "icon": ["icons/icon.png"],
+    "category": "Productivity",
+    "shortDescription": "Copiloto realtime para aulas e reuniões",
+    "longDescription": "Overlay always-on-top: transcrição + Language Coach + Work Copilot via backend local."
+  }
+}

@@ -13,11 +13,15 @@ router:
   filler_words: ["uhm", "ahn", "é...", "tipo", "hmm", "uh", "ah"]
 
 llm:
-  provider: none        # none | gemini | openai | groq | ollama
-  model: ""             # ex: gemini-2.0-flash, gpt-4o-mini, llama-3.3-70b-versatile
-  api_key_env: "LLM_API_KEY"
-  timeout_seconds: 8
-  # Se provider=none, usa templates locais (funciona offline, Entrega 1)
+  provider: none        # none | openrouter | gemini | openai | groq | ollama
+  # OpenRouter (recomendado: leque de modelos + frees com fallback automático)
+  # export OPENROUTER_API_KEY="sk-or-..."  (nunca commitar)
+  # export OPENROUTER_MODEL="meta-llama/llama-3.3-70b-instruct:free"
+  # export OPENROUTER_FALLBACKS="google/gemma-3-27b-it:free,qwen/qwen3-32b:free"
+  model: "meta-llama/llama-3.3-70b-instruct:free"
+  api_key_env: "OPENROUTER_API_KEY"
+  timeout_seconds: 12
+  # Sem chave: usa templates locais (funciona offline)
 
 privacy:
   save_audio: false

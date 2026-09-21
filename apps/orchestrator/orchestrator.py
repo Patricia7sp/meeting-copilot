@@ -111,11 +111,33 @@ class Orchestrator:
         if not self.should_emit():
             return {"type": "noop", "reason": "cooldown"}
         self._last_insight_ts = time.time()
-        if dec.action == "lang_coach":
-            return {"type": "insight", "kind": "lang_coach",
-                    "decision": dec.reason, "card": self.lang_coach_card(text)}
-        return {"type": "insight", "kind": "work_copilot",
-                "decision": dec.reason, "card": self.work_copilot_card(text)}
+        kind = dec.action  # lang_coach | work_copilot
+        template = self.lang_coach_card(text) if kind == "lang_coach" else self.work_copilot_card(text)
+        refined, used = self._try_refine(kind, text)
+        card = refined or template
+        out: dict = {"type": "insight", "kind": kind, "decision": dec.reason, "card": card}
+        if refined:
+            out["llm_model"] = used
+        return out
+
+    def _try_refine(self, kind: str, last_text: str) -> tuple[dict | None, str]:
+        """Se LLM_PROVIDER=openrouter + chave presente, refina o template. Senão (None, motivo)."""
+        import os as _os
+        if _os.getenv("LLM_PROVIDER", "none").lower() != "openrouter":
+            return None, "llm-off"
+        try:
+            from llm_openrouter import enhance_card, configured
+        except ImportError:
+            try:
+                from apps.orchestrator.llm_openrouter import enhance_card, configured  # type: ignore
+            except ImportError:
+                return None, "no-module"
+        if not configured():
+            return None, "no-key"
+        try:
+            return enhance_card(kind, self.ctx.to_prompt_block(), last_text)
+        except Exception as e:
+            return None, f"llm-error: {e}"
 
     # ----- templates locais (funcionam offline) -----
     def lang_coach_card(self, last_text: str) -> dict:

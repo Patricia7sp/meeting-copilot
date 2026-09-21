@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Meeting Copilot</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; background:#101014; color:#eee; margin:0; padding:10px; font-size:13px; }
+  header { display:flex; align-items:center; gap:8px; position:sticky; top:0; background:#101014; padding-bottom:8px; }
+  #rec { color:#ff5555; font-weight:700; font-size:12px; }
+  #mode { color:#999; font-size:11px; }
+  #wsdot { width:8px; height:8px; border-radius:50%; background:#666; }
+  #wsdot.on { background:#4ade80; }
+  #controls { margin-left:auto; display:flex; gap:6px; }
+  button, select { background:#1e1e24; color:#eee; border:1px solid #333; border-radius:8px; padding:5px 9px; cursor:pointer; font-size:12px; }
+  button:hover { border-color:#555; }
+  #partial { color:#888; font-style:italic; min-height:18px; margin:4px 0; }
+  #log { display:flex; flex-direction:column; gap:8px; }
+  .card { background:#1a1a20; border:1px solid #2c2c34; border-radius:10px; padding:9px 10px; }
+  .card.say { border-left:3px solid #4ade80; }
+  .card.work { border-left:3px solid #60a5fa; }
+  .card.tr { border-left:3px solid #444; opacity:.85; }
+  .card .actions { margin-top:6px; display:flex; gap:6px; }
+  .card .actions button { font-size:11px; padding:3px 8px; }
+  .card.pinned { outline:1px solid #facc15; }
+  .muted { color:#999; font-size:11px; }
+  .say-opt { margin:3px 0; }
+</style>
+</head>
+<body>
+<header>
+  <span id="wsdot"></span>
+  <span id="rec">● TRANSCREVENDO</span>
+  <span id="mode"></span>
+  <span id="controls">
+    <select id="modeSel" title="Modo">
+      <option value="auto">auto</option>
+      <option value="english">EN</option>
+      <option value="work">work</option>
+    </select>
+    <button id="connBtn" onclick="toggleWS()">conectar</button>
+  </span>
+</header>
+<div class="muted">Ctrl+Shift+C copia a melhor frase do último card EN. Cards expiram em 60s (fixe com 📌).</div>
+<div id="partial"></div>
+<div id="log"></div>
+<script>
+const WS_URL = 'ws://localhost:8000/ws';
+let ws = null, lastSay = '', connected = false;
+const log = document.getElementById('log');
+const partial = document.getElementById('partial');
+const dot = document.getElementById('wsdot');
+
+function el(html, cls){ const d=document.createElement('div'); d.className='card '+cls; d.innerHTML=html; return d; }
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+function setConn(on){ connected=on; dot.classList.toggle('on',on); document.getElementById('connBtn').textContent = on?'desconectar':'conectar'; }
+
+function addTranscript(speaker, text){
+  partial.textContent = speaker+': '+text;
+  const c = el('<b>'+esc(speaker)+':</b> '+esc(text), 'tr');
+  log.prepend(c); trimLog();
+}
+function addCoach(card, decision){
+  lastSay = (card.say_this&&card.say_this[0])||'';
+  const c = el('<b>EN diga:</b>'+card.say_this.map(s=>'<div class="say-opt">• '+esc(s)+'</div>').join('')
+    +'<div class="muted">vocab: '+esc((card.vocab||[]).join(', '))+'<br>↳ '+esc(card.follow_up||'')+' | '+esc(card.grammar_tip||'')+'<br>motivo: '+esc(decision||'')+'</div>'
+    +'<div class="actions"><button onclick="copySay(this)">copiar melhor frase</button><button onclick="this.closest(\'.card\').classList.toggle(\'pinned\')">📌</button><button onclick="this.closest(\'.card\').remove()">descartar</button></div>', 'say');
+  log.prepend(c); trimLog();
+}
+function addWork(card, decision){
+  const c = el('<b>'+esc(card.summary||'insight')+'</b><div class="muted">motivo: '+esc(decision||'')+'</div>'
+    +'<div>check: '+(card.to_check||[]).map(esc).join('; ')+'</div>'
+    +'<div>perguntar: '+(card.to_ask||[]).map(esc).join('; ')+'</div>'
+    +'<div class="actions"><button onclick="this.closest(\'.card\').classList.toggle(\'pinned\')">📌</button><button onclick="this.closest(\'.card\').remove()">descartar</button></div>', 'work');
+  log.prepend(c); trimLog();
+}
+function trimLog(){ [...log.children].forEach((c,i)=>{ if(i>30 && !c.classList.contains('pinned')) c.remove(); }); }
+function copySay(btn){ if(lastSay) navigator.clipboard.writeText(lastSay).then(()=>{ btn.textContent='copiado!'; setTimeout(()=>btn.textContent='copiar melhor frase',1200); }); }
+document.addEventListener('keydown', e=>{ if((e.ctrlKey||e.metaKey)&&e.shiftKey&&e.key.toLowerCase()==='c'&&lastSay){ e.preventDefault(); navigator.clipboard.writeText(lastSay); } });
+
+function toggleWS(){ if(connected){ ws&&ws.close(); return; } connect(); }
+function connect(){
+  ws = new WebSocket(WS_URL);
+  ws.onopen = ()=>{ setConn(true); log.prepend(el('WS conectado.', 'tr')); };
+  ws.onclose = ()=>{ setConn(false); setTimeout(()=>{ if(!connected) connect(); }, 3000); };
+  ws.onerror = ()=>{ setConn(false); };
+  ws.onmessage = (e)=>{
+    let m; try{ m=JSON.parse(e.data); }catch{ return; }
+    if(m.transcript) addTranscript(m.transcript.speaker, m.transcript.text);
+    const ins=m.insight;
+    if(ins && ins.type==='insight'){
+      if(ins.kind==='lang_coach') addCoach(ins.card, ins.decision);
+      if(ins.kind==='work_copilot') addWork(ins.card, ins.decision);
+    }
+  };
+}
+fetch('http://localhost:8000/health').then(r=>r.json()).then(j=>{
+  document.getElementById('mode').textContent='modo '+j.mode;
+  document.getElementById('modeSel').value=j.mode||'auto';
+}).catch(()=>{ document.getElementById('mode').textContent='backend offline — cartas demo abaixo'; });
+document.getElementById('modeSel').onchange = (e)=>{ document.getElementById('mode').textContent='modo '+e.target.value+' (reinicie API p/ aplicar)'; };
+// auto-conecta ao abrir (comportamento overlay)
+connect();
+</script>
+</body>
+</html>
