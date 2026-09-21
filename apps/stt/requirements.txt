@@ -1,0 +1,5 @@
+# STT realtime (nativo, fora do Docker)
+faster-whisper>=1.0.0
+webrtcvad>=2.0.10
+websockets>=12.0
+# torch/silero entram na Entrega 2b se precisar de VAD neural

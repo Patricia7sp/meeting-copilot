@@ -1,0 +1,4 @@
+# Deps nativas (só p/ captura realtime; pipeline/testes rodam sem elas)
+sounddevice>=0.4.6
+numpy>=1.26
+# faster-whisper entra no apps/stt; webrtcvad/torch entram na Entrega 2b com VAD real
