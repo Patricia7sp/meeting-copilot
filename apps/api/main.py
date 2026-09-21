@@ -14,13 +14,20 @@ try:
     from fastapi import FastAPI, WebSocket, WebSocketDisconnect
     from fastapi.responses import HTMLResponse
     from fastapi.staticfiles import StaticFiles
+    from fastapi.middleware.cors import CORSMiddleware
     HAS_FASTAPI = True
 except ImportError:
     HAS_FASTAPI = False
 
 MODE = os.getenv("ORCHESTRATOR_MODE", "auto")
 COOLDOWN = int(os.getenv("COOLDOWN_SECONDS", "4"))  # menor no MVP p/ demo
-DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).resolve().parents[2] / "data" / "sessions"))
+def _default_data_dir() -> Path:
+    try:
+        return Path(__file__).resolve().parents[2] / "data" / "sessions"  # repo local
+    except IndexError:
+        return Path("/app/data/sessions")  # dentro do container
+
+DATA_DIR = Path(os.getenv("DATA_DIR", _default_data_dir()))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 orch = Orchestrator(mode=MODE if MODE in ("auto", "english", "work") else "auto",
@@ -37,6 +44,15 @@ def persist(speaker: str, text: str, out: dict):
 
 if HAS_FASTAPI:
     app = FastAPI(title="Meeting Copilot MVP")
+    # Acesso via Tailscale: UI roda no mesmo host/porta, mas libera CORS
+    # para o caso do cliente abrir de outra origem (ex. file:// no Tauri).
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|100\.\d+\.\d+\.\d+)(:\d+)?",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.get("/health")
     def health():
@@ -73,7 +89,13 @@ if HAS_FASTAPI:
 
     @app.get("/ui")
     def ui():
-        html = Path(__file__).resolve().parent.parent / "ui" / "index.html"
-        return HTMLResponse(html.read_text(encoding="utf-8"))
+        candidates = [
+            Path(__file__).resolve().parent.parent / "ui" / "index.html",  # repo local
+            Path(__file__).resolve().parent / "ui_index.html",  # dentro do container
+        ]
+        for html in candidates:
+            if html.exists():
+                return HTMLResponse(html.read_text(encoding="utf-8"))
+        return HTMLResponse("<h1>UI não encontrada</h1>", status_code=404)
 else:
     app = None

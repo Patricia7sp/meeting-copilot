@@ -47,7 +47,8 @@
 <div id="partial"></div>
 <div id="log"></div>
 <script>
-const WS_URL = 'ws://localhost:8000/ws';
+const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + (window.__COPILOT_HOST__ || location.host) + '/ws';
+const HEALTH_URL = (location.protocol === 'https:' ? 'https://' : 'http://') + (window.__COPILOT_HOST__ || location.host) + '/health';
 let ws = null, lastSay = '', connected = false;
 const log = document.getElementById('log');
 const partial = document.getElementById('partial');
@@ -96,7 +97,7 @@ function connect(){
     }
   };
 }
-fetch('http://localhost:8000/health').then(r=>r.json()).then(j=>{
+fetch(HEALTH_URL).then(r=>r.json()).then(j=>{
   document.getElementById('mode').textContent='modo '+j.mode;
   document.getElementById('modeSel').value=j.mode||'auto';
 }).catch(()=>{ document.getElementById('mode').textContent='backend offline — cartas demo abaixo'; });

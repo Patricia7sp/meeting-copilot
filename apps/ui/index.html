@@ -17,7 +17,7 @@
 </head>
 <body>
   <div><span id="rec">● TRANSCREVENDO (local)</span> <span class="muted" id="mode"></span></div>
-  <div class="muted">Overlay MVP — na V1 vira Tauri always-on-top. Conecta em <code>ws://localhost:8000/ws</code></div>
+  <div class="muted">Overlay MVP — conecta automaticamente no mesmo host da página (funciona via Tailscale).</div>
   <div style="margin-top:8px">
     <button onclick="connect()">Conectar WS</button>
     <button onclick="demo()">Demo local (sem backend)</button>
@@ -27,7 +27,8 @@
 let ws=null;
 function addCard(html, cls){ const d=document.createElement('div'); d.className='card '+cls; d.innerHTML=html; document.getElementById('log').prepend(d); }
 function connect(){
-  ws=new WebSocket('ws://localhost:8000/ws');
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws=new WebSocket(proto + '//' + location.host + '/ws');
   ws.onmessage=(e)=>{ const m=JSON.parse(e.data);
     if(m.transcript) addCard('<b>'+m.transcript.speaker+':</b> '+m.transcript.text, '');
     const ins=m.insight;
