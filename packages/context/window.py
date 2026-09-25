@@ -10,6 +10,8 @@ class Turn:
     speaker: str  # YOU | OTHERS | PROFESSOR...
     text: str
     lang: str = "unknown"
+    confidence: float | None = None
+    low: bool = False
     ts: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
 
@@ -19,23 +21,42 @@ class ContextWindow:
         self.turns: list[Turn] = []
         self.rolling_summary: str = ""
 
-    def add(self, speaker: str, text: str, lang: str = "unknown") -> None:
+    def add(self, speaker: str, text: str, lang: str = "unknown",
+            confidence: float | None = None, low: bool = False) -> None:
         text = text.strip()
         if not text:
             return
-        self.turns.append(Turn(speaker=speaker, text=text, lang=lang))
+        self.turns.append(Turn(speaker=speaker, text=text, lang=lang,
+                               confidence=confidence, low=low))
         # compacta: quando estoura, resume os mais antigos de forma extrativa simples
         if len(self.turns) > self.max_turns * 2:
             overflow = self.turns[: len(self.turns) - self.max_turns]
             self.rolling_summary = self._fold_summary(self.rolling_summary, overflow)
-            self.turns = self.turns[-self.max_turns :]
+            self.turns = self.turns[-self.max_turns:]
 
     def window(self, n: int | None = None) -> list[Turn]:
         n = n or self.max_turns
         return self.turns[-n:]
 
+    def consolidated(self, n: int | None = None) -> list[Turn]:
+        """Janela consolidada: descarta turnos de baixa confiança e junta falas
+        consecutivas do MESMO locutor (base para decisão de insight)."""
+        turns = [t for t in self.window(n) if not t.low]
+        out: list[Turn] = []
+        for t in turns:
+            if out and out[-1].speaker == t.speaker:
+                prev = out[-1]
+                out[-1] = Turn(speaker=prev.speaker,
+                               text=(prev.text + " " + t.text).strip(),
+                               lang=prev.lang if prev.lang != "unknown" else t.lang,
+                               confidence=t.confidence or prev.confidence, low=False,
+                               ts=t.ts)
+            else:
+                out.append(t)
+        return out
+
     def window_text(self, n: int | None = None) -> str:
-        return "\n".join(f"{t.speaker}: {t.text}" for t in self.window(n))
+        return "\n".join(f"{t.speaker}: {t.text}" for t in self.consolidated(n))
 
     def _fold_summary(self, prev: str, overflow: list[Turn]) -> str:
         # Resumo extrativo barato: pega frases com palavras-chave (decisão, pergunta, verbo técnico)

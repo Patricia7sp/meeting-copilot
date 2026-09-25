@@ -1,20 +1,28 @@
-"""Orchestrator: router proativo + Language Coach + Work Copilot.
+"""Orchestrator: classificador/roteador + Language Coach + Work Copilot.
 
-Entrega 1: 100% regras locais + templates. Sem chamada LLM obrigatória.
-Entrega 3: pluga LLM real (Gemini/OpenAI/Groq/Ollama) atrás de `generate_with_llm()`.
+Pipeline de decisão (prioridade: fidelidade antes de insights):
+1. Só falas CONSOLIDADAS (stage=final) geram insight; provisórios ficam de fora.
+2. Limiar de confiança: resumo/insight só se confidence >= INSIGHT_MIN_CONFIDENCE
+   (e não-low).
+3. Deduplicação: mesma fala normalizada não gera insight repetido.
+4. Contexto CONSOLIDADO (mesmo locutor é juntado; baixa confiança sai da janela).
+5. Classificação/roteamento via modelo OpenRouter (Jev, env ROUTER_MODEL) quando
+   disponível; sem chave, regras locais. LLM GERADOR entra só na sugestão final.
 """
 from __future__ import annotations
+import os
 import re
 import sys
-import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../packages/context"))
-from window import ContextWindow
+from window import ContextWindow  # noqa: E402
 
 
 FILLERS = {"uhm", "ahn", "hmm", "uh", "ah", "é", "tipo assim", "tipo", "huh", "mm"}
+INSIGHT_MIN_CONFIDENCE = float(os.getenv("INSIGHT_MIN_CONFIDENCE", "0.5"))
+MAX_RECENT_FPS = int(os.getenv("DEDUP_WINDOW_SIZE", "20"))
 
 QUESTION_RE = re.compile(r"\?\s*$")
 ENGLISH_QUESTION_RE = re.compile(
@@ -38,6 +46,8 @@ class Decision:
     action: str  # ignore | lang_coach | work_copilot
     reason: str
     confidence: float
+    priority: float = 0.5   # 0..1: urgência/importância do insight
+    needs_insight: bool = True
 
 
 class Orchestrator:
@@ -47,10 +57,23 @@ class Orchestrator:
         self.cooldown = cooldown_seconds
         self.ctx = ContextWindow(max_turns=max_turns)
         self._last_insight_ts = 0.0
+        self._recent_fps: list[str] = []
+        self.classifier = None
+        self._load_classifier()
+
+    # ---------- classificador (OpenRouter "Jev") ou regras locais ----------
+    def _load_classifier(self):
+        try:
+            from classifier import classifier_for  # type: ignore
+            self.classifier = classifier_for()
+        except Exception as e:
+            self.classifier = None
+            print(f"[orchestrator] classificador indisponível: {e} (usa regras locais)")
 
     # ---------- entrada ----------
-    def observe(self, speaker: str, text: str, lang: str = "unknown") -> None:
-        self.ctx.add(speaker, text, lang)
+    def observe(self, speaker: str, text: str, lang: str = "unknown",
+                confidence: float | None = None, low: bool = False) -> None:
+        self.ctx.add(speaker, text, lang, confidence=confidence, low=low)
 
     # ---------- decisão proativa ----------
     def route(self, speaker: str, text: str) -> Decision:
@@ -58,9 +81,9 @@ class Orchestrator:
         words = re.findall(r"[\w']+", t, re.UNICODE)
 
         if len(words) < 4:
-            return Decision("ignore", "muito curto", 0.95)
+            return Decision("ignore", "muito curto", 0.95, priority=0.1)
         if t.lower().strip(" .") in FILLERS:
-            return Decision("ignore", "filler", 0.95)
+            return Decision("ignore", "filler", 0.95, priority=0.1)
 
         forced = None
         if self.mode == "english":
@@ -74,24 +97,33 @@ class Orchestrator:
 
         if self.mode == "auto":
             if tech and not learn:
-                return Decision("work_copilot", "sinal técnico", 0.85)
+                return Decision("work_copilot", "sinal técnico", 0.85, priority=0.7)
             if learn or (question and self._looks_like_class()):
-                return Decision("lang_coach", "sinal de aula/inglês", 0.8)
+                return Decision("lang_coach", "sinal de aula/inglês", 0.8, priority=0.7)
             if question:
-                # pergunta genérica: decide pelo histórico
                 if self._looks_like_class():
-                    return Decision("lang_coach", "pergunta em contexto de aula", 0.6)
-                return Decision("work_copilot", "pergunta em contexto de trabalho", 0.6)
-            return Decision("ignore", "sem sinal suficiente", 0.7)
+                    return Decision("lang_coach", "pergunta em contexto de aula", 0.6, priority=0.5)
+                return Decision("work_copilot", "pergunta em contexto de trabalho", 0.6, priority=0.5)
+            return Decision("ignore", "sem sinal suficiente", 0.7, priority=0.2)
 
-        # modo forçado ainda respeita anti-spam de obviedade
         if forced == "lang_coach" and tech and not learn and not question:
-            return Decision("ignore", "técnico puro em modo english", 0.6)
+            return Decision("ignore", "técnico puro em modo english", 0.6, priority=0.3)
         if forced == "work_copilot" and learn and not tech:
-            # aula de inglês no meio do trabalho? ainda gera, mas com confiança menor
-            return Decision("lang_coach", "sinal de inglês mesmo em modo work", 0.55)
+            return Decision("lang_coach", "sinal de inglês mesmo em modo work", 0.55, priority=0.5)
         action = forced or "ignore"
-        return Decision(action, f"modo fixo {self.mode}", 0.9)
+        return Decision(action, f"modo fixo {self.mode}", 0.9, priority=0.6)
+
+    def decide(self, text: str) -> Decision:
+        """Roteia via classificador (OpenRouter) se disponível; senão, regras locais."""
+        if self.classifier is not None:
+            try:
+                dec = self.classifier(self.ctx.window_text(6), text)
+                if dec is not None:
+                    return dec
+            except Exception as e:
+                print(f"[orchestrator] classificador falhou: {e} (usa regras locais)")
+        last_sp = self.ctx.turns[-1].speaker if self.ctx.turns else "OTHERS"
+        return self.route(last_sp, text)
 
     def _looks_like_class(self) -> bool:
         blob = self.ctx.window_text(6).lower()
@@ -102,12 +134,33 @@ class Orchestrator:
     def should_emit(self) -> bool:
         return (time.time() - self._last_insight_ts) >= self.cooldown
 
+    # ---------- deduplicação ----------
+    def _fingerprint(self, text: str) -> str:
+        return re.sub(r"[^\w\u00C0-\u024F ]+", "", text.lower()).strip()
+
+    def _dedup(self, text: str) -> bool:
+        fp = self._fingerprint(text)
+        if fp in self._recent_fps:
+            return True
+        self._recent_fps.append(fp)
+        if len(self._recent_fps) > MAX_RECENT_FPS:
+            del self._recent_fps[: len(self._recent_fps) - MAX_RECENT_FPS]
+        return False
+
     # ---------- geração ----------
-    def handle(self, speaker: str, text: str, lang: str = "unknown") -> dict | None:
-        self.observe(speaker, text, lang)
-        dec = self.route(speaker, text)
-        if dec.action == "ignore":
+    def handle(self, speaker: str, text: str, lang: str = "unknown",
+               confidence: float | None = None, low_confidence: bool = False) -> dict:
+        self.observe(speaker, text, lang, confidence=confidence, low=low_confidence)
+        # fidelidade primeiro: fala de baixa confiança não gera insight
+        if confidence is not None and (low_confidence or confidence < INSIGHT_MIN_CONFIDENCE):
+            return {"type": "noop", "reason": "low_confidence"}
+        if self._dedup(text):
+            return {"type": "noop", "reason": "dedup"}
+        dec = self.decide(text)
+        if dec.action == "ignore" or not dec.needs_insight:
             return {"type": "noop", "reason": dec.reason}
+        if dec.priority < 0.2:
+            return {"type": "noop", "reason": f"low_priority ({dec.priority:.2f})"}
         if not self.should_emit():
             return {"type": "noop", "reason": "cooldown"}
         self._last_insight_ts = time.time()
@@ -115,7 +168,8 @@ class Orchestrator:
         template = self.lang_coach_card(text) if kind == "lang_coach" else self.work_copilot_card(text)
         refined, used = self._try_refine(kind, text)
         card = refined or template
-        out: dict = {"type": "insight", "kind": kind, "decision": dec.reason, "card": card}
+        out: dict = {"type": "insight", "kind": kind, "decision": dec.reason,
+                     "priority": round(dec.priority, 2), "card": card}
         if refined:
             out["llm_model"] = used
         return out

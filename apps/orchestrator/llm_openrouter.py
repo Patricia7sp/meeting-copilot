@@ -49,23 +49,27 @@ def _headers() -> dict:
 
 
 def chat(messages: list[dict], max_tokens: int = 400, temperature: float = 0.4,
-         timeout: int | None = None) -> tuple[str | None, str]:
-    """Tenta cada modelo da cadeia. Retorna (texto|None, modelo_usado_ou_erro)."""
+         timeout: int | None = None, model: str | None = None) -> tuple[str | None, str]:
+    """Tenta cada modelo da cadeia. Retorna (texto|None, modelo_usado_ou_erro).
+
+    `model` explícito sobrepõe o primário (ex.: classificador Jev via ROUTER_MODEL).
+    """
     if not configured():
         return None, "no-key"
     timeout = timeout or int(os.getenv("OPENROUTER_TIMEOUT", "12"))
+    chain = [model] + [m for m in model_chain() if m != model] if model else model_chain()
     last_err = "unknown"
-    for model in model_chain():
-        body = json.dumps({"model": model, "messages": messages,
+    for mdl in chain:
+        body = json.dumps({"model": mdl, "messages": messages,
                            "max_tokens": max_tokens, "temperature": temperature}).encode()
         req = urllib.request.Request(f"{BASE}/chat/completions", data=body, headers=_headers())
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 data = json.loads(r.read().decode())
             text = data["choices"][0]["message"]["content"].strip()
-            return text, model
+            return text, mdl
         except Exception as e:
-            last_err = f"{model}: {e}"
+            last_err = f"{mdl}: {e}"
             continue
     return None, last_err
 
