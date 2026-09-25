@@ -13,6 +13,8 @@ services:
     environment:
       - ORCHESTRATOR_MODE=auto
       - LLM_PROVIDER=${LLM_PROVIDER:-none}  # none | openrouter | gemini | openai | groq | ollama
+      - ROUTER_CLASSIFIER=${ROUTER_CLASSIFIER:-auto}
+      - ROUTER_MODEL=${ROUTER_MODEL:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OPENROUTER_MODEL=${OPENROUTER_MODEL:-meta-llama/llama-3.3-70b-instruct:free}
       - OPENROUTER_FALLBACKS=${OPENROUTER_FALLBACKS:-google/gemma-3-27b-it:free,qwen/qwen3-32b:free}
@@ -25,7 +27,7 @@ services:
   stt:
     build: ./apps/stt
     environment:
-      - WHISPER_MODEL=large-v3-turbo
+      - WHISPER_MODEL=small
       - API_WS_URL=ws://api:8000/ws
       - MOCK_MODE=true
     volumes:

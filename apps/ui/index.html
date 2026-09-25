@@ -11,13 +11,22 @@
   .card { background:#1e1e1e; border:1px solid #333; border-radius:10px; padding:10px 12px; }
   .card.say { border-left:4px solid #4ade80; }
   .card.work { border-left:4px solid #60a5fa; }
+  .card.you { border-left:4px solid #fbbf24; }
+  .card.other { border-left:4px solid #60a5fa; }
+  .card.live { opacity:.85; }
   .muted { color:#999; font-size:12px; }
   button { background:#222; color:#eee; border:1px solid #444; border-radius:8px; padding:6px 10px; cursor:pointer; }
+  .badge { display:inline-block; background:#333; color:#ccc; border-radius:4px; padding:1px 6px; font-size:11px; margin-left:4px; }
+  .badge.lang { background:#1e3a2f; color:#4ade80; }
+  .badge.conf { background:#33291e; color:#fbbf24; }
+  .badge.warn { background:#3d2323; color:#ff6b6b; }
+  .badge.stage { background:#252c3d; color:#8ab4ff; }
+  .translation { color:#9ca3af; font-style:italic; }
 </style>
 </head>
 <body>
   <div><span id="rec">● TRANSCREVENDO (local)</span> <span class="muted" id="mode"></span></div>
-  <div class="muted">Overlay MVP — conecta automaticamente no mesmo host da página (funciona via Tailscale).</div>
+  <div class="muted">por enunciado: <span class="badge stage">provisório ao vivo</span> substitui o card, <span class="badge stage">final</span> consolida a fala inteira no MESMO card (id/ack via WS).</div>
   <div style="margin-top:8px">
     <button onclick="connect()">Conectar WS</button>
     <button onclick="demo()">Demo local (sem backend)</button>
@@ -25,12 +34,56 @@
   <div id="log"></div>
 <script>
 let ws=null;
-function addCard(html, cls){ const d=document.createElement('div'); d.className='card '+cls; d.innerHTML=html; document.getElementById('log').prepend(d); }
+const cards = {};   // chave = utterance_id (provisório/final consolidam no MESMO card)
+
+function addCard(html, cls){ const d=document.createElement('div'); d.className='card '+cls; d.innerHTML=html; document.getElementById('log').prepend(d); return d; }
+
+function badges(t){
+  const b=[];
+  if(t.language && t.language!=='unknown') b.push('<span class="badge lang">'+t.language+'</span>');
+  if(t.confidence!=null) b.push('<span class="badge conf">'+(t.confidence*100|0)+'%</span>');
+  if(t.low_confidence) b.push('<span class="badge warn">baixa confiança</span>');
+  if(t.stage==='provisional') b.push('<span class="badge stage">provisório</span>');
+  if(t.stage==='final') b.push('<span class="badge stage">final</span>');
+  return b.join('');
+}
+
+function transCard(t){
+  const tr = t.translation ? '<div class="translation">→ '+t.translation+'</div>' : '';
+  return '<b>'+t.speaker+':</b> '+t.text+badges(t)+tr;
+}
+
+function keyOf(t){ return t.utterance_id != null ? 'u'+t.utterance_id : 's'+t.speaker; }
+
+function onTranscript(t){
+  const key = keyOf(t);
+  const cls = t.speaker==='YOU'?'you':'other';
+  if (t.stage==='provisional'){
+    let el = cards[key];
+    if(!el){ el = addCard(transCard(t), cls+' live'); cards[key]=el; }
+    else { el.className='card '+cls+' live'; el.innerHTML=transCard(t); }
+  } else {
+    // final consolida a fala: substitui o card cursivo da MESMA utterance (um card só)
+    const prior = cards[key];
+    if (prior){ prior.remove(); delete cards[key]; }
+    if (key) cards[key]=addCard(transCard(t), cls);
+  }
+}
+
+function onMetrics(m){
+  let el = document.getElementById('metrics');
+  if(!el){ el = addCard('', 'muted'); el.id='metrics'; }
+  el.innerHTML='<b>ws:</b> ack '+m.acked+' | ack p50 '+Math.round(m.ack_p50_ms||0)+'ms | retries '+(m.retries||0)
+    +' | drops '+(m.drops||0)+' | fila '+(m.queue||0)+' | reconexões '+(m.reconnects||0);
+}
+
 function connect(){
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws=new WebSocket(proto + '//' + location.host + '/ws');
   ws.onmessage=(e)=>{ const m=JSON.parse(e.data);
-    if(m.transcript) addCard('<b>'+m.transcript.speaker+':</b> '+m.transcript.text, '');
+    if(m.type==='ack') return;                       // ack é do STT -> cliente
+    if(m.type==='metrics'){ onMetrics(m); return; }  // métricas espelhadas
+    if(m.transcript) onTranscript(m.transcript);
     const ins=m.insight;
     if(ins && ins.type==='insight'){
       if(ins.kind==='lang_coach') addCard('<b>EN diga:</b><br>• '+ins.card.say_this.join('<br>• ')+'<br><span class=muted>'+ins.card.follow_up+' | '+ins.card.grammar_tip+'</span>', 'say');
@@ -39,7 +92,16 @@ function connect(){
   };
   ws.onopen=()=>addCard('WS conectado.', '');
 }
-function demo(){ addCard('<b>OTHERS:</b> What did you do during the weekend?',''); addCard('<b>EN diga:</b><br>• I stayed home most of the weekend, but I went out on Sunday.<br><span class=muted>How about you? | Past simple: stayed/went</span>','say'); }
+
+function demo(){
+  onTranscript({speaker:'OTHERS', stage:'provisional', text:'What did you do during the', language:'en', confidence:0.71, low_confidence:false, rms:0.03});
+  onTranscript({speaker:'OTHERS', stage:'provisional', text:'What did you do during the weekend?', language:'en', confidence:0.88, low_confidence:false});
+  onTranscript({speaker:'OTHERS', stage:'final', text:'What did you do during the weekend?', language:'en', confidence:0.97, low_confidence:false});
+  onTranscript({speaker:'YOU', stage:'provisional', text:'Ontem eu fui ao mer', language:'pt', confidence:0.6, low_confidence:false});
+  onTranscript({speaker:'YOU', stage:'provisional', text:'Ontem eu fui ao mercado', language:'pt', confidence:0.8, low_confidence:false});
+  onTranscript({speaker:'YOU', stage:'final', text:'Ontem eu fui ao mercado.', language:'pt', confidence:0.95, low_confidence:false, translation:'Yesterday I went to the market.'});
+  addCard('<b>EN diga:</b><br>• I stayed home most of the weekend, but I went out on Sunday.<br><span class=muted>How about you? | Past simple: stayed/went</span>', 'say');
+}
 fetch('/health').then(r=>r.json()).then(j=>document.getElementById('mode').textContent='modo '+j.mode).catch(()=>{});
 </script>
 </body>

@@ -7,3 +7,5 @@ data/sessions/*.md
 .reversa/
 _reversa_sdd/
 _reversa_forward/
+
+.env

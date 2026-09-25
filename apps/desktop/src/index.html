@@ -43,7 +43,7 @@
     <button id="connBtn" onclick="toggleWS()">conectar</button>
   </span>
 </header>
-<div class="muted">Ctrl+Shift+C copia a melhor frase do último card EN. Cards expiram em 60s (fixe com 📌).</div>
+<div class="muted">Ctrl+Shift+C copia a melhor frase do último card EN. Cards expiram em 60s (fixe com 📌). <span id="wsMetrics"></span></div>
 <div id="partial"></div>
 <div id="log"></div>
 <script>
@@ -58,10 +58,39 @@ function el(html, cls){ const d=document.createElement('div'); d.className='card
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
 function setConn(on){ connected=on; dot.classList.toggle('on',on); document.getElementById('connBtn').textContent = on?'desconectar':'conectar'; }
 
+function badges(t){
+  const b=[];
+  if(t.language && t.language!=='unknown') b.push('<span style="color:#4ade80">'+t.language+'</span>');
+  if(t.confidence!=null) b.push('<span style="color:#fbbf24">'+(t.confidence*100|0)+'%</span>');
+  if(t.low_confidence) b.push('<span style="color:#ff6b6b">baixa conf</span>');
+  if(t.stage==='provisional') b.push('<span style="color:#8ab4ff">provisório</span>');
+  return b.join(' · ');
+}
+function keyOf(t){ return t.utterance_id != null ? 'u'+t.utterance_id : 's'+t.speaker; }
+const trCards = {};   // utterance_id -> card (provisório/final consolidam no MESMO card)
 function addTranscript(speaker, text){
-  partial.textContent = speaker+': '+text;
-  const c = el('<b>'+esc(speaker)+':</b> '+esc(text), 'tr');
-  log.prepend(c); trimLog();
+  const t = {speaker, text, utterance_id:null, stage:'provisional'};
+  updateTranscript(t);
+}
+function updateTranscript(t){
+  const key = keyOf(t);
+  partial.textContent = t.speaker+': '+t.text;
+  if (t.stage==='provisional'){
+    let c = trCards[key];
+    if (!c){ c = el('<b>'+esc(t.speaker)+'</b> '+esc(t.text)+(t.language?' <span style="color:#999">['+(t.language||'')+']</span>':'')+(t.confidence!=null?' <span style="color:#999">'+Math.round(t.confidence*100)+'%</span>':'')+' <span style="color:#8ab4ff">provisório</span>', 'tr'); log.prepend(c); trCards[key]=c; }
+    else c.innerHTML = '<b>'+esc(t.speaker)+'</b> '+esc(t.text)+' <span style="color:#999">['+(t.language||'')+' · '+Math.round(t.confidence*100)+'%</span><span style="color:#8ab4ff"> provisório</span>';
+    trimLog();
+  } else {
+    const prior = trCards[key];
+    if (prior){ prior.remove(); delete trCards[key]; }
+    if (key) trCards[key] = el('<b>'+esc(t.speaker)+'</b> '+esc(t.text)+' <span style="color:#999">['+(t.language||'')+' · '+Math.round(t.confidence*100)+'%]</span>', 'tr');
+    if (trCards[key]) log.prepend(trCards[key]);
+    trimLog();
+  }
+}
+function onMetrics(m){
+  const elm = document.getElementById('wsMetrics');
+  elm.textContent = 'ws: ack '+m.acked+' | p50 '+Math.round(m.ack_p50_ms||0)+'ms | retries '+(m.retries||0)+' | drops '+(m.drops||0)+' | fila '+(m.queue||0)+' | reconexões '+(m.reconnects||0);
 }
 function addCoach(card, decision){
   lastSay = (card.say_this&&card.say_this[0])||'';
@@ -89,7 +118,9 @@ function connect(){
   ws.onerror = ()=>{ setConn(false); };
   ws.onmessage = (e)=>{
     let m; try{ m=JSON.parse(e.data); }catch{ return; }
-    if(m.transcript) addTranscript(m.transcript.speaker, m.transcript.text);
+    if(m.type==='ack') return;
+    if(m.type==='metrics'){ onMetrics(m); return; }
+    if(m.transcript) updateTranscript(m.transcript);
     const ins=m.insight;
     if(ins && ins.type==='insight'){
       if(ins.kind==='lang_coach') addCoach(ins.card, ins.decision);
