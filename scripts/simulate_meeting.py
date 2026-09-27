@@ -30,8 +30,9 @@ def dry_run(mode):
         time.sleep(0.3)
 
 def via_http(mode):
+    api_url = os.getenv("API_URL", "http://localhost:8000").rstrip("/")
     for sp, tx in SCENES[mode]:
-        req = urllib.request.Request("http://localhost:8000/ingest",
+        req = urllib.request.Request(f"{api_url}/ingest",
             data=json.dumps({"speaker": sp, "text": tx}).encode(),
             headers={"Content-Type": "application/json"})
         print(urllib.request.urlopen(req, timeout=5).read().decode()[:400])

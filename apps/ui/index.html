@@ -22,10 +22,12 @@
   .badge.warn { background:#3d2323; color:#ff6b6b; }
   .badge.stage { background:#252c3d; color:#8ab4ff; }
   .translation { color:#9ca3af; font-style:italic; }
+  #sess { display:inline-block; margin-left:8px; background:#1f2933; border:1px solid #2e3a45;
+          border-radius:999px; padding:2px 10px; font-size:12px; color:#9fe3a4; }
 </style>
 </head>
 <body>
-  <div><span id="rec">● TRANSCREVENDO (local)</span> <span class="muted" id="mode"></span></div>
+  <div><span id="rec">● TRANSCREVENDO (local)</span> <span class="muted" id="mode"></span><span id="sess" hidden></span></div>
   <div class="muted">por enunciado: <span class="badge stage">provisório ao vivo</span> substitui o card, <span class="badge stage">final</span> consolida a fala inteira no MESMO card (id/ack via WS).</div>
   <div style="margin-top:8px">
     <button onclick="connect()">Conectar WS</button>
@@ -77,12 +79,24 @@ function onMetrics(m){
     +' | drops '+(m.drops||0)+' | fila '+(m.queue||0)+' | reconexões '+(m.reconnects||0);
 }
 
+const SESSION_LABEL = {english_lesson:'Aula de inglês', work_meeting:'Reunião de trabalho', general_conversation:'Conversa geral'};
+function onSession(s){
+  if(!s) return;
+  const el = document.getElementById('sess');
+  if(!s.type || s.type==='unknown'){ el.hidden=true; el.textContent=''; return; }
+  const label = SESSION_LABEL[s.type] || s.type;
+  el.textContent = label+' · '+Math.round((s.confidence||0)*100)+'%'+(s.source==='local'?' (local)':'');
+  el.hidden = false;
+}
+
 function connect(){
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws=new WebSocket(proto + '//' + location.host + '/ws');
   ws.onmessage=(e)=>{ const m=JSON.parse(e.data);
     if(m.type==='ack') return;                       // ack é do STT -> cliente
     if(m.type==='metrics'){ onMetrics(m); return; }  // métricas espelhadas
+    if(m.type==='session'){ onSession(m.session); return; }  // mudança confirmada de tipo
+    if(m.session) onSession(m.session);              // indicador discreto (só atualiza quando estável)
     if(m.transcript) onTranscript(m.transcript);
     const ins=m.insight;
     if(ins && ins.type==='insight'){
@@ -100,6 +114,7 @@ function demo(){
   onTranscript({speaker:'YOU', stage:'provisional', text:'Ontem eu fui ao mer', language:'pt', confidence:0.6, low_confidence:false});
   onTranscript({speaker:'YOU', stage:'provisional', text:'Ontem eu fui ao mercado', language:'pt', confidence:0.8, low_confidence:false});
   onTranscript({speaker:'YOU', stage:'final', text:'Ontem eu fui ao mercado.', language:'pt', confidence:0.95, low_confidence:false, translation:'Yesterday I went to the market.'});
+  onSession({type:'english_lesson', confidence:0.97, source:'jev'});
   addCard('<b>EN diga:</b><br>• I stayed home most of the weekend, but I went out on Sunday.<br><span class=muted>How about you? | Past simple: stayed/went</span>', 'say');
 }
 fetch('/health').then(r=>r.json()).then(j=>document.getElementById('mode').textContent='modo '+j.mode).catch(()=>{});
