@@ -1,4 +1,4 @@
-# Modelos faster-whisper — decisão (Entrega 2b - qualidade de transcrição)
+# Modelos faster-whisper — decisão (Entrega 2b + Feature 005 - evidência)
 
 ## Critério
 
@@ -36,6 +36,16 @@ Medição rápida de latência/RTF por modelo (1 fixture): `apps/stt/bench.py`.
 
 (preencha com os números reais do `bench.py` na sua máquina antes de fixar.)
 
+## Promoção de modelo SOMENTE com evidência (Feature 005)
+
+`small` é o default até o benchmark com áudio real PT-BR/EN provar o contrário.
+**Não promova `medium`/`large-v3-turbo` por "sentimento"**: rode o benchmark e
+compare. Meta de qualidade para trocar de modelo: **cobertura ≥ 95%**,
+**provisório ≤ 3s** e **final ≤ 5s** — senão, mantém `small`. As gravações reais
+(PT-BR e EN com referência textual) exigem Mac + `faster-whisper`/`sounddevice`
+(`apps/stt/benchmark.py --speak`); no servidor isso está ⏳ pendente. O
+`benchmark.py --mkdir` já prepara `data/bench/{pt,en}/` p/ quando houver áudio.
+
 ## Decisão (guia)
 
 - **Aulas + calls em PT/EN misturados no mesmo fluxo** → `medium` no Mac Intel:
@@ -61,6 +71,10 @@ senão, baixe para `medium` no `.env`/dar até o `bench.py` confirmar.
    pós-filtro de repetição/filler; descarte com motivo nos logs.
 4. **Tradução separada**: transcrição preserva o idioma. Tradução só se
    `TRANSLATE_TARGET=en` (nativo do faster-whisper). Outros destinos = feature futura.
+4b. **Piso por fonte**: `INITIAL_FLOOR_DB_MIC=-46` (mic) e `INITIAL_FLOOR_DB_LOOPBACK=-58`
+   (loopback/BlackHole — sinal mais limpo que o mic; um único piso para as duas fontes
+   faria o loopback nunca chegar a falar). O `NoiseFloorGate` escolhe o piso inicial
+   pela fonte (`mic` vs `loopback`).
 
 ## Regras da segmentação contínua + entrega WS (fidelidade da transcrição)
 

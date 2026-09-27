@@ -15,14 +15,24 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../packages/context"))
 from window import ContextWindow  # noqa: E402
+
+if TYPE_CHECKING:
+    from session import SessionResult, SessionTracker  # noqa: F401
 
 
 FILLERS = {"uhm", "ahn", "hmm", "uh", "ah", "é", "tipo assim", "tipo", "huh", "mm"}
 INSIGHT_MIN_CONFIDENCE = float(os.getenv("INSIGHT_MIN_CONFIDENCE", "0.5"))
 MAX_RECENT_FPS = int(os.getenv("DEDUP_WINDOW_SIZE", "20"))
+
+
+def _useful_final(text: str) -> bool:
+    """Fala final com conteudo util p/ classificar sessão (>= 3 palavras)."""
+    return len(re.findall(r"[\w\u00C0-\u024F']+", text, re.UNICODE)) >= 3
 
 QUESTION_RE = re.compile(r"\?\s*$")
 ENGLISH_QUESTION_RE = re.compile(
@@ -51,15 +61,20 @@ class Decision:
 
 
 class Orchestrator:
-    def __init__(self, mode: str = "auto", cooldown_seconds: int = 10, max_turns: int = 12):
+    def __init__(self, mode: str = "auto", cooldown_seconds: int = 10, max_turns: int = 12,
+                 session_id: str | None = None, session_dir: Path | str | None = None):
         assert mode in ("auto", "english", "work")
         self.mode = mode
         self.cooldown = cooldown_seconds
         self.ctx = ContextWindow(max_turns=max_turns)
         self._last_insight_ts = 0.0
         self._recent_fps: list[str] = []
+        self.session_id = session_id
+        self.session_dir = session_dir
         self.classifier = None
+        self.session: SessionTracker | None = None
         self._load_classifier()
+        self._load_session()
 
     # ---------- classificador (OpenRouter "Jev") ou regras locais ----------
     def _load_classifier(self):
@@ -69,6 +84,14 @@ class Orchestrator:
         except Exception as e:
             self.classifier = None
             print(f"[orchestrator] classificador indisponível: {e} (usa regras locais)")
+
+    def _load_session(self):
+        try:
+            from session import SessionTracker  # type: ignore
+            self.session = SessionTracker(session_id=self.session_id, session_dir=self.session_dir)
+        except Exception as e:
+            self.session = None
+            print(f"[orchestrator] tracker de sessão indisponível: {e}")
 
     # ---------- entrada ----------
     def observe(self, speaker: str, text: str, lang: str = "unknown",
@@ -115,15 +138,31 @@ class Orchestrator:
 
     def decide(self, text: str) -> Decision:
         """Roteia via classificador (OpenRouter) se disponível; senão, regras locais."""
-        if self.classifier is not None:
-            try:
-                dec = self.classifier(self.ctx.window_text(6), text)
-                if dec is not None:
-                    return dec
-            except Exception as e:
-                print(f"[orchestrator] classificador falhou: {e} (usa regras locais)")
-        last_sp = self.ctx.turns[-1].speaker if self.ctx.turns else "OTHERS"
-        return self.route(last_sp, text)
+        dec, _sess = self.decide_full(text)
+        return dec
+
+    def decide_full(self, text: str) -> tuple[Decision, SessionResult | None]:
+        """(Decision, SessionResult|None). O Jev só é chamado quando a política de sessão
+        pede (>= gatilho, sem dedup de janela, dentro de limites/intervalo)."""
+        dec = None
+        sess = None
+        if self.session is not None and self.classifier is not None:
+            fp = self.session.ctx_fingerprint()
+            if self.session.should_call(fp):
+                self.session.on_call_done(fp)
+                try:
+                    from classifier import classify_full  # type: ignore
+                    dec, sess, _used = classify_full(self.ctx.window_text(6), text)
+                except Exception as e:
+                    print(f"[orchestrator] classificador falhou: {e} (usa regras locais)")
+                    dec, sess = None, None
+        if dec is None:
+            last_sp = self.ctx.turns[-1].speaker if self.ctx.turns else "OTHERS"
+            dec = self.route(last_sp, text)
+        return dec, sess
+
+    def session_profile(self) -> dict | None:
+        return self.session.to_dict() if self.session is not None else None
 
     def _looks_like_class(self) -> bool:
         blob = self.ctx.window_text(6).lower()
@@ -149,30 +188,48 @@ class Orchestrator:
 
     # ---------- geração ----------
     def handle(self, speaker: str, text: str, lang: str = "unknown",
-               confidence: float | None = None, low_confidence: bool = False) -> dict:
+               confidence: float | None = None, low_confidence: bool = False,
+               duration_ms: int | None = None) -> dict:
         self.observe(speaker, text, lang, confidence=confidence, low=low_confidence)
         # fidelidade primeiro: fala de baixa confiança não gera insight
         if confidence is not None and (low_confidence or confidence < INSIGHT_MIN_CONFIDENCE):
             return {"type": "noop", "reason": "low_confidence"}
         if self._dedup(text):
             return {"type": "noop", "reason": "dedup"}
-        dec = self.decide(text)
+
+        dec, sess = self.decide_full(text)
+        session_changed = False
+        if self.session is not None and _useful_final(text):
+            note = self.session.observe_final(text, speaker=speaker, confidence=confidence,
+                                              duration_ms=duration_ms, classification=sess)
+            session_changed = bool((note or {}).get("changed"))
+
         if dec.action == "ignore" or not dec.needs_insight:
-            return {"type": "noop", "reason": dec.reason}
+            return {"type": "noop", "reason": dec.reason, "session": self._session_payload(session_changed)}
         if dec.priority < 0.2:
-            return {"type": "noop", "reason": f"low_priority ({dec.priority:.2f})"}
+            return {"type": "noop", "reason": f"low_priority ({dec.priority:.2f})",
+                    "session": self._session_payload(session_changed)}
         if not self.should_emit():
-            return {"type": "noop", "reason": "cooldown"}
+            return {"type": "noop", "reason": "cooldown", "session": self._session_payload(session_changed)}
         self._last_insight_ts = time.time()
         kind = dec.action  # lang_coach | work_copilot
         template = self.lang_coach_card(text) if kind == "lang_coach" else self.work_copilot_card(text)
         refined, used = self._try_refine(kind, text)
         card = refined or template
         out: dict = {"type": "insight", "kind": kind, "decision": dec.reason,
-                     "priority": round(dec.priority, 2), "card": card}
+                     "priority": round(dec.priority, 2), "card": card,
+                     "session": self._session_payload(session_changed)}
         if refined:
             out["llm_model"] = used
         return out
+
+    def _session_payload(self, changed: bool = False) -> dict | None:
+        if self.session is None:
+            return None
+        payload = self.session.to_dict()
+        if changed:
+            payload["changed"] = True
+        return payload
 
     def _try_refine(self, kind: str, last_text: str) -> tuple[dict | None, str]:
         """Se LLM_PROVIDER=openrouter + chave presente, refina o template. Senão (None, motivo)."""

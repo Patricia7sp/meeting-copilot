@@ -51,7 +51,8 @@ PROVISIONAL_EVERY_SECONDS = float(os.getenv("PROVISIONAL_EVERY_SECONDS", "0.8"))
 PAUSE_SECONDS = float(os.getenv("PAUSE_SECONDS", "0.7"))        # silêncio real que encerra a fala
 MAX_UTTERANCE_SECONDS = float(os.getenv("MAX_UTTERANCE_SECONDS", "10.0"))  # refresh do provisório
 MAX_UTTERANCE_CAP_SECONDS = float(os.getenv("MAX_UTTERANCE_CAP_SECONDS", "120.0"))
-INITIAL_FLOOR_DB = float(os.getenv("INITIAL_FLOOR_DB", "-46"))
+INITIAL_FLOOR_DB = float(os.getenv("INITIAL_FLOOR_DB", "-46"))   # mic (compat legado)
+INITIAL_FLOOR_DB_LOOPBACK = float(os.getenv("INITIAL_FLOOR_DB_LOOPBACK", "-58"))  # BlackHole é mais baixo
 SPEECH_DELTA_DB_MIC = float(os.getenv("SPEECH_DELTA_DB_MIC", "6"))
 SPEECH_DELTA_DB_LOOPBACK = float(os.getenv("SPEECH_DELTA_DB_LOOPBACK", "6"))
 SILENCE_DELTA_DB = float(os.getenv("SILENCE_DELTA_DB", "3"))
@@ -101,11 +102,13 @@ class NoiseFloorGate:
     ruído ambiente do mic vire `YOU` ou que a fonte fique chaveando a cada frame).
     """
 
-    def __init__(self, source: str, *, initial_floor_db: float = INITIAL_FLOOR_DB,
+    def __init__(self, source: str, *, initial_floor_db: float | None = None,
                  speech_delta_db: float | None = None, silence_delta_db: float | None = None,
                  min_webrtc_ratio: float = MIN_WEBRTC_SPEECH_RATIO,
                  warmup_frames: int = GATE_WARMUP_FRAMES, log: object = None):
         self.source = source
+        if initial_floor_db is None:
+            initial_floor_db = (INITIAL_FLOOR_DB if source == "mic" else INITIAL_FLOOR_DB_LOOPBACK)
         self.cal = NoiseFloorCalibrator(initial_floor_db=initial_floor_db)
         self.speech = False
         self.speech_delta_db = (speech_delta_db if speech_delta_db is not None
@@ -264,7 +267,8 @@ def load_model():
         print(f"{_LEVEL} modelo={MODEL} (cpu int8). frame={int(FRAME_SECONDS * 1000)}ms "
               f"overlap={OVERLAP_SECONDS}s window={WINDOW_SECONDS}s "
               f"pause={PAUSE_SECONDS}s max_utterance={MAX_UTTERANCE_SECONDS}s "
-              f"floor={INITIAL_FLOOR_DB}dB+{SPEECH_DELTA_DB_MIC}/{SPEECH_DELTA_DB_LOOPBACK}dB "
+              f"floor {INITIAL_FLOOR_DB}/{INITIAL_FLOOR_DB_LOOPBACK}dB(mic/loopback) "
+              f"+{SPEECH_DELTA_DB_MIC}/{SPEECH_DELTA_DB_LOOPBACK}dB "
               f"log_prob_prev={LOG_PROB_THRESHOLD} final={LOG_PROB_THRESHOLD_FINAL} "
               f"no_speech={NO_SPEECH_THRESHOLD} cond_prev(final)=True "
               f"translate={TRANSLATE_TARGET or '-'} ws_queue={WS_QUEUE}")
@@ -304,7 +308,7 @@ async def run_realtime(max_iter: int | None = None) -> None:
     )
     print(f"{_LEVEL} capturando mic={MIC_DEVICE or 'default'} loopback={LOOPBACK_DEVICE or 'default'} "
           f"(frame {int(FRAME_SECONDS * 1000)}ms / overlap {OVERLAP_SECONDS}s / "
-          f"pause {PAUSE_SECONDS}s / floor {INITIAL_FLOOR_DB}dB "
+          f"pause {PAUSE_SECONDS}s / floor {INITIAL_FLOOR_DB}/{INITIAL_FLOOR_DB_LOOPBACK}dB "
           f"+{SPEECH_DELTA_DB_MIC}/{SPEECH_DELTA_DB_LOOPBACK}dB sinais histerese "
           f"{SILENCE_DELTA_DB}dB)... Ctrl+C p/ parar.")
     n = 0

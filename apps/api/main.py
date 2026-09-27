@@ -30,10 +30,12 @@ def _default_data_dir() -> Path:
 DATA_DIR = Path(os.getenv("DATA_DIR", _default_data_dir()))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-orch = Orchestrator(mode=MODE if MODE in ("auto", "english", "work") else "auto",
-                    cooldown_seconds=COOLDOWN)
-
 SESSION_ID = datetime.now().strftime("%Y-%m-%d_%H%M")
+SESSION_ID = datetime.now().strftime("%Y-%m-%d_%H%M")
+orch = Orchestrator(mode=MODE if MODE in ("auto", "english", "work") else "auto",
+                    cooldown_seconds=COOLDOWN,
+                    session_id=SESSION_ID, session_dir=str(DATA_DIR))
+
 _jsonl = open(DATA_DIR / f"{SESSION_ID}.jsonl", "a", encoding="utf-8")
 clients: set["WebSocket"] = set()
 _seen_ids: set = set()            # dedup server-side por event_id (idempotência)
@@ -101,7 +103,8 @@ if HAS_FASTAPI:
 
     @app.get("/health")
     def health():
-        return {"ok": True, "mode": orch.mode, "session": SESSION_ID}
+        return {"ok": True, "mode": orch.mode, "session": SESSION_ID,
+                "session_profile": orch.session_profile()}
 
     @app.post("/ingest")
     def ingest(payload: dict):
@@ -111,21 +114,25 @@ if HAS_FASTAPI:
         confidence = payload.get("confidence")
         low = bool(payload.get("low_confidence", False))
         translation = payload.get("translation")
+        duration_ms = payload.get("duration_ms")
         stage = payload.get("stage", "final")
         consolidated = bool(payload.get("consolidated", True))
         msg_id = payload.get("id")
         event_id = payload.get("event_id")
         # insights só quando a fala está consolidada (final) e não repete id
         if stage == "final" and consolidated and not _note_seen(event_id or msg_id):
-            out = orch.handle(speaker, text, lang, confidence=confidence, low_confidence=low)
+            out = orch.handle(speaker, text, lang, confidence=confidence,
+                              low_confidence=low, duration_ms=duration_ms)
         else:
             reason = "provisional" if stage != "final" else (
                 "not-consolidated" if not consolidated else "id-duplicated")
             out = {"type": "noop", "reason": reason}
+        out.setdefault("session", orch.session_profile())
         persist(speaker, text, out or {}, lang=lang, confidence=confidence,
                 low_confidence=low, translation=translation, msg_id=msg_id,
                 event_id=event_id, stage=stage, consolidated=consolidated)
-        return {"insight": out, "context": orch.ctx.window_text(6)}
+        return {"insight": out, "context": orch.ctx.window_text(6),
+                "session": orch.session_profile()}
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket):
@@ -151,6 +158,7 @@ if HAS_FASTAPI:
                 confidence = msg.get("confidence")
                 low = bool(msg.get("low_confidence", False))
                 translation = msg.get("translation")
+                duration_ms = msg.get("duration_ms")
                 dedup_key = msg.get("event_id") or msg_id
                 if stage != "final" or not consolidated or _note_seen(dedup_key):
                     reason = ("provisional" if stage != "final"
@@ -158,7 +166,13 @@ if HAS_FASTAPI:
                     out = {"type": "noop", "reason": reason}
                 else:
                     out = orch.handle(speaker, text, lang,
-                                      confidence=confidence, low_confidence=low)
+                                      confidence=confidence, low_confidence=low,
+                                      duration_ms=duration_ms)
+                out.setdefault("session", orch.session_profile())
+                prof = out.get("session")
+                if isinstance(prof, dict) and prof.get("changed"):
+                    await broadcast({"type": "session", "session": prof,
+                                     "session_id": SESSION_ID})
                 persist(speaker, text, out or {}, lang=lang, confidence=confidence,
                         low_confidence=low, translation=translation,
                         msg_id=msg_id, event_id=msg.get("event_id"),

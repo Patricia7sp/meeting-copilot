@@ -13,6 +13,7 @@
   #mode { color:#999; font-size:11px; }
   #wsdot { width:8px; height:8px; border-radius:50%; background:#666; }
   #wsdot.on { background:#4ade80; }
+  #sess { color:#9fe3a4; font-size:11px; background:#1a2026; border:1px solid #2c3a46; border-radius:999px; padding:2px 9px; }
   #controls { margin-left:auto; display:flex; gap:6px; }
   button, select { background:#1e1e24; color:#eee; border:1px solid #333; border-radius:8px; padding:5px 9px; cursor:pointer; font-size:12px; }
   button:hover { border-color:#555; }
@@ -22,6 +23,7 @@
   .card.say { border-left:3px solid #4ade80; }
   .card.work { border-left:3px solid #60a5fa; }
   .card.tr { border-left:3px solid #444; opacity:.85; }
+  .card.low { border-left:3px solid #ff6b6b; opacity:.6; }
   .card .actions { margin-top:6px; display:flex; gap:6px; }
   .card .actions button { font-size:11px; padding:3px 8px; }
   .card.pinned { outline:1px solid #facc15; }
@@ -34,6 +36,7 @@
   <span id="wsdot"></span>
   <span id="rec">● TRANSCREVENDO</span>
   <span id="mode"></span>
+  <span id="sess" hidden></span>
   <span id="controls">
     <select id="modeSel" title="Modo">
       <option value="auto">auto</option>
@@ -83,7 +86,7 @@ function updateTranscript(t){
   } else {
     const prior = trCards[key];
     if (prior){ prior.remove(); delete trCards[key]; }
-    if (key) trCards[key] = el('<b>'+esc(t.speaker)+'</b> '+esc(t.text)+' <span style="color:#999">['+(t.language||'')+' · '+Math.round(t.confidence*100)+'%]</span>', 'tr');
+    if (key) trCards[key] = el('<b>'+esc(t.speaker)+'</b> '+esc(t.text)+' <span style="color:#999">['+(t.language||'')+' · '+Math.round(t.confidence*100)+'%]</span>'+(t.low_confidence?' <span style="color:#ff6b6b">baixa conf</span>':''), 'tr'+(t.low_confidence?' low':''));
     if (trCards[key]) log.prepend(trCards[key]);
     trimLog();
   }
@@ -91,6 +94,14 @@ function updateTranscript(t){
 function onMetrics(m){
   const elm = document.getElementById('wsMetrics');
   elm.textContent = 'ws: ack '+m.acked+' | p50 '+Math.round(m.ack_p50_ms||0)+'ms | retries '+(m.retries||0)+' | drops '+(m.drops||0)+' | fila '+(m.queue||0)+' | reconexões '+(m.reconnects||0);
+}
+const SESSION_LABEL = {english_lesson:'Aula de inglês', work_meeting:'Reunião de trabalho', general_conversation:'Conversa geral'};
+function onSession(s){
+  if(!s) return;
+  const elm = document.getElementById('sess');
+  if(!s.type || s.type==='unknown'){ elm.hidden=true; elm.textContent=''; return; }
+  elm.textContent = (SESSION_LABEL[s.type]||s.type)+' · '+Math.round((s.confidence||0)*100)+'%'+(s.source==='local'?' (local)':'');
+  elm.hidden = false;
 }
 function addCoach(card, decision){
   lastSay = (card.say_this&&card.say_this[0])||'';
@@ -120,6 +131,8 @@ function connect(){
     let m; try{ m=JSON.parse(e.data); }catch{ return; }
     if(m.type==='ack') return;
     if(m.type==='metrics'){ onMetrics(m); return; }
+    if(m.type==='session'){ onSession(m.session); return; }
+    if(m.session) onSession(m.session);
     if(m.transcript) updateTranscript(m.transcript);
     const ins=m.insight;
     if(ins && ins.type==='insight'){

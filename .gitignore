@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 data/sessions/*.jsonl
 data/sessions/*.md
+data/sessions/*_session.json
 !.gitkeep
 .reversa/
 _reversa_sdd/

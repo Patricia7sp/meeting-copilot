@@ -75,6 +75,8 @@ def save_fixture(pcm: bytes, lang: str, ref: str, idx: int) -> None:
 
 
 def read_fixtures(base: Path) -> list[dict]:
+    if not base.exists():
+        return []
     out = []
     for lang_dir in sorted(base.iterdir()):
         if not lang_dir.is_dir():
@@ -148,6 +150,8 @@ def markdown_table(rows: list[dict]) -> str:
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--mkdir", action="store_true",
+                    help="cria data/bench/{pt,en} (fixtures sintéticas primeiro; áudio real ⏳ Mac)")
     ap.add_argument("--speak", action="store_true", help="grava e digita a referência dos fixtures")
     ap.add_argument("--run", action="store_true", help="roda o benchmark nos fixtures")
     ap.add_argument("--seconds", type=int, default=6)
@@ -156,6 +160,13 @@ def main():
     ap.add_argument("--passes", type=int, default=3)
     ap.add_argument("--save", default="")
     args = ap.parse_args()
+
+    if args.mkdir:
+        for lang in (l.strip() for l in args.langs.split(",") if l.strip()):
+            (DATA_DIR / lang).mkdir(parents=True, exist_ok=True)
+            print(f"[bench] {DATA_DIR / lang}/ criado. "
+                  f"Grave o áudio real no Mac com --speak e rode --run depois.")
+        return
 
     if args.speak:
         for lang in (l.strip() for l in args.langs.split(",") if l.strip()):
