@@ -1,4 +1,4 @@
-"""Regressão: broadcast() não trava com cliente lento (head-of-line) — fix de produção.
+"""Regressão: broadcast nunca segura o loop com cliente lento (head-of-line).
 
 Uso: python3 apps/api/test_broadcast.py
 """
@@ -42,31 +42,65 @@ class FastClient:
         pass
 
 
-def test_broadcast_slow_client_does_not_block():
+def test_broadcast_never_blocks_handler():
     slow, fast = SlowClient(), FastClient()
     api.clients = {slow, fast}
-    t0 = time.monotonic()
-    asyncio.run(api.broadcast({"type": "ping", "seq": 1}))
-    elapsed = time.monotonic() - t0
-    assert elapsed < 2.0, f"broadcast travou {elapsed:.1f}s (cliente lento segurou o loop)"
-    assert len(fast.received) == 1, fast.received
-    payload = json.loads(fast.received[0])
-    assert payload["type"] == "ping" and payload["seq"] == 1, payload
-    assert slow not in api.clients, "cliente lento deveria ter sido descartado"
-    assert fast in api.clients, "cliente saudável não pode ser descartado"
-    assert slow.closed, "cliente lento deveria ser desconectado"
-    print(f"ok broadcast não bloqueou ({elapsed:.2f}s), saudável recebeu, lento descartado+fechado")
+    api.BROADCAST_QUEUE = asyncio.Queue(maxsize=20000)
+
+    async def scenario():
+        worker = asyncio.create_task(api._broadcast_worker())
+        try:
+            t0 = time.monotonic()
+            api.broadcast({"type": "ping", "seq": 1})
+            enqueue_s = time.monotonic() - t0
+            # broadcast() é só agendamento O(1): nunca bloqueia o handler
+            assert enqueue_s < 0.05, f"broadcast levou {enqueue_s:.2f}s"
+
+            while time.monotonic() - t0 < 3.0 and not fast.received:
+                await asyncio.sleep(0.01)
+            elapsed = time.monotonic() - t0
+            assert fast.received, "cliente saudável não recebeu o evento"
+            payload = json.loads(fast.received[0])
+            assert payload == {"type": "ping", "seq": 1}, payload
+            assert elapsed < 2.0, f"envio demorou {elapsed:.1f}s (cliente lento segurou)"
+            assert slow not in api.clients, "cliente lento deveria ser descartado"
+            assert fast in api.clients, "cliente saudável não pode ser descartado"
+            assert slow.closed, "cliente lento deveria ser desconectado"
+            print(f"ok: broadcast O(1) ({enqueue_s*1000:.0f}ms), saudável recebeu em {elapsed:.2f}s, lento descartado+fechado")
+        finally:
+            worker.cancel()
+            with _suppress(asyncio.CancelledError):
+                await worker
+
+    asyncio.run(scenario())
 
 
 def test_broadcast_no_clients_noop():
     api.clients = set()
-    asyncio.run(api.broadcast({"type": "ping"}))  # não deve levantar
+    api.BROADCAST_QUEUE = asyncio.Queue(maxsize=20000)
+
+    async def scenario():
+        worker = asyncio.create_task(api._broadcast_worker())
+        try:
+            api.broadcast({"type": "ping"})  # não deve levantar
+            await asyncio.sleep(0.05)
+        finally:
+            worker.cancel()
+            with _suppress(asyncio.CancelledError):
+                await worker
+
+    asyncio.run(scenario())
     print("ok broadcast sem clientes é noop")
+
+
+def _suppress(*excs):
+    from contextlib import suppress
+    return suppress(*excs)
 
 
 def main():
     print("== apps/api/test_broadcast.py ==")
-    for fn in (test_broadcast_slow_client_does_not_block, test_broadcast_no_clients_noop):
+    for fn in (test_broadcast_never_blocks_handler, test_broadcast_no_clients_noop):
         fn()
     print("TODOS OS TESTES PASSARAM.")
 
