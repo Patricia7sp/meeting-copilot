@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import contextlib
+from contextlib import asynccontextmanager
 import json
 import os
 import sys
@@ -90,29 +91,54 @@ async def ack(websocket: "WebSocket", msg_id) -> None:
         pass
 
 
-async def broadcast(payload: dict) -> None:
-    """Entrega eventos tanto ao STT quanto a todas as UIs conectadas.
+BROADCAST_QUEUE: asyncio.Queue = asyncio.Queue(maxsize=20000)
+_dropped_broadcasts = 0
 
-    Envio por cliente é limitado por `SEND_TIMEOUT`: um cliente lento (sem ler,
-    buffer de TCP cheio) NUNCA segura o event loop — sem o fix, um único cliente
-    lentro bloqueava o broadcast de todos (head-of-line) e clientes saudáveis
-    tomavam ping timeout. Cliente que estoura o tempo é descartado e desconectado
-    (o padrão do projeto é o cliente reconectar + reenviar pendentes).
+
+def broadcast(payload: dict) -> None:
+    """Agenda envio a todos os clientes SEM bloquear o handler (fila + worker).
+
+    Sem isto, um cliente lento (buffer de TCP cheio, ex. Mac em replay de
+    pendentes após reconnect) segurava o event loop no `await send_text` e
+    clientes saudáveis tomavam WS 1011 ping timeout. Agora o envio roda em
+    worker próprio; cada cliente é envio com limite `SEND_TIMEOUT` e o que
+    estoura é descartado + desconectado (o cliente reconecta e reenvia —
+    padrão do wsclient).
     """
-    message = json.dumps(payload, ensure_ascii=False)
-    dead: list["WebSocket"] = []
-    for client in tuple(clients):
-        try:
-            await asyncio.wait_for(client.send_text(message), timeout=SEND_TIMEOUT)
-        except (RuntimeError, WebSocketDisconnect, asyncio.TimeoutError):
-            dead.append(client)
-    for client in dead:
-        clients.discard(client)
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(client.close(), timeout=1.0)
+    global _dropped_broadcasts
+    try:
+        BROADCAST_QUEUE.put_nowait(json.dumps(payload, ensure_ascii=False))
+    except asyncio.QueueFull:
+        _dropped_broadcasts += 1
+        print(f"[api] fila de broadcast cheia; mensagens descartadas: {_dropped_broadcasts}")
+
+
+async def _broadcast_worker() -> None:
+    while True:
+        message = await BROADCAST_QUEUE.get()
+        dead: list["WebSocket"] = []
+        for client in tuple(clients):
+            try:
+                await asyncio.wait_for(client.send_text(message), timeout=SEND_TIMEOUT)
+            except (RuntimeError, WebSocketDisconnect, asyncio.TimeoutError):
+                dead.append(client)
+        for client in dead:
+            clients.discard(client)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(client.close(), timeout=1.0)
 
 if HAS_FASTAPI:
-    app = FastAPI(title="Meeting Copilot MVP")
+    @asynccontextmanager
+    async def lifespan(_app):
+        worker = asyncio.create_task(_broadcast_worker())
+        try:
+            yield
+        finally:
+            worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
+
+    app = FastAPI(title="Meeting Copilot MVP", lifespan=lifespan)
     # Acesso via Tailscale: UI roda no mesmo host/porta, mas libera CORS
     # para o caso do cliente abrir de outra origem (ex. file:// no Tauri).
     app.add_middleware(
@@ -161,7 +187,7 @@ if HAS_FASTAPI:
         """Encerra a sessão, gera o resumo Markdown e avisa todos os clientes."""
         done = orch.end_session(_collect_finals()) if orch is not None else None
         if done:
-            await broadcast(done)
+            broadcast(done)
         return done or {"type": "session_end", "error": "no-session"}
 
     @app.websocket("/ws")
@@ -178,12 +204,12 @@ if HAS_FASTAPI:
                 msg_id = msg.get("id")
                 await ack(websocket, msg_id)
                 if msg.get("type") == "metrics":
-                    await broadcast(msg)
+                    broadcast(msg)
                     continue
                 if msg.get("type") == "end_session":
                     done = orch.end_session(_collect_finals()) if orch is not None else None
                     if done:
-                        await broadcast(done)
+                        broadcast(done)
                     continue
                 speaker = msg.get("speaker", "OTHERS")
                 text = msg.get("text", "")
@@ -206,13 +232,13 @@ if HAS_FASTAPI:
                 out.setdefault("session", orch.session_profile())
                 prof = out.get("session")
                 if isinstance(prof, dict) and prof.get("changed"):
-                    await broadcast({"type": "session", "session": prof,
-                                     "session_id": SESSION_ID})
+                    broadcast({"type": "session", "session": prof,
+                               "session_id": SESSION_ID})
                 persist(speaker, text, out or {}, lang=lang, confidence=confidence,
                         low_confidence=low, translation=translation,
                         msg_id=msg_id, event_id=msg.get("event_id"),
                         stage=stage, consolidated=consolidated)
-                await broadcast(
+                broadcast(
                     {"transcript": {"id": msg_id, "event_id": msg.get("event_id"),
                                     "utterance_id": msg.get("utterance_id"),
                                     "stage": stage, "consolidated": consolidated,
