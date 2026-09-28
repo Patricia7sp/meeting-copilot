@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import json
 import os
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -41,6 +42,7 @@ orch = Orchestrator(mode=MODE if MODE in ("auto", "english", "work") else "auto"
                     session_id=SESSION_ID, session_dir=str(DATA_DIR))
 
 _jsonl = open(DATA_DIR / f"{SESSION_ID}.jsonl", "a", encoding="utf-8")
+_jsonl_lock = threading.Lock()       # persist pode rodar de threads via to_thread
 clients: set["WebSocket"] = set()
 _seen_ids: set = set()            # dedup server-side por event_id (idempotência)
 _SEEN_MAX = 4000
@@ -62,14 +64,15 @@ def persist(speaker: str, text: str, out: dict, lang: str = "unknown",
             confidence=None, low_confidence: bool = False, translation=None,
             msg_id=None, event_id=None, stage: str = "final",
             consolidated: bool = True):
-    _jsonl.write(json.dumps({"ts": datetime.now().isoformat(timespec="seconds"),
-                             "id": msg_id, "event_id": event_id, "stage": stage,
-                             "consolidated": consolidated,
-                             "speaker": speaker, "text": text, "language": lang,
-                             "confidence": confidence, "low_confidence": low_confidence,
-                             "translation": translation, "out": out},
-                            ensure_ascii=False, default=str) + "\n")
-    _jsonl.flush()
+    with _jsonl_lock:
+        _jsonl.write(json.dumps({"ts": datetime.now().isoformat(timespec="seconds"),
+                                 "id": msg_id, "event_id": event_id, "stage": stage,
+                                 "consolidated": consolidated,
+                                 "speaker": speaker, "text": text, "language": lang,
+                                 "confidence": confidence, "low_confidence": low_confidence,
+                                 "translation": translation, "out": out},
+                                ensure_ascii=False, default=str) + "\n")
+        _jsonl.flush()
 
 
 def _collect_finals():
@@ -234,10 +237,10 @@ if HAS_FASTAPI:
                 if isinstance(prof, dict) and prof.get("changed"):
                     broadcast({"type": "session", "session": prof,
                                "session_id": SESSION_ID})
-                persist(speaker, text, out or {}, lang=lang, confidence=confidence,
-                        low_confidence=low, translation=translation,
-                        msg_id=msg_id, event_id=msg.get("event_id"),
-                        stage=stage, consolidated=consolidated)
+                await asyncio.to_thread(persist, speaker, text, out or {}, lang,
+                                        confidence, low, translation,
+                                        msg_id, msg.get("event_id"),
+                                        stage, consolidated)
                 broadcast(
                     {"transcript": {"id": msg_id, "event_id": msg.get("event_id"),
                                     "utterance_id": msg.get("utterance_id"),
