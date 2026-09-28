@@ -32,7 +32,9 @@
   <div style="margin-top:8px">
     <button onclick="connect()">Conectar WS</button>
     <button onclick="demo()">Demo local (sem backend)</button>
+    <button onclick="endSession()">Encerrar e salvar</button>
   </div>
+  <div class="muted" id="report" hidden></div>
   <div id="log"></div>
 <script>
 let ws=null;
@@ -89,6 +91,20 @@ function onSession(s){
   el.hidden = false;
 }
 
+function onSessionEnd(d){
+  if(!d) return;
+  const el = document.getElementById('report');
+  el.textContent = 'Resumo salvo em '+(d.report_path||'(caminho desconhecido)');
+  el.hidden = false;
+}
+
+function endSession(){
+  fetch('/end_session', {method:'POST'})
+    .then(r=>r.json())
+    .then(d=>{ if(d && d.type==='session_end') onSessionEnd(d); })
+    .catch(()=>{});
+}
+
 function connect(){
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws=new WebSocket(proto + '//' + location.host + '/ws');
@@ -96,6 +112,7 @@ function connect(){
     if(m.type==='ack') return;                       // ack é do STT -> cliente
     if(m.type==='metrics'){ onMetrics(m); return; }  // métricas espelhadas
     if(m.type==='session'){ onSession(m.session); return; }  // mudança confirmada de tipo
+    if(m.type==='session_end'){ onSessionEnd(m); return; }   // resumo salvo (Feature 006)
     if(m.session) onSession(m.session);              // indicador discreto (só atualiza quando estável)
     if(m.transcript) onTranscript(m.transcript);
     const ins=m.insight;

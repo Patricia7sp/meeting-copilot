@@ -68,6 +68,16 @@ def persist(speaker: str, text: str, out: dict, lang: str = "unknown",
     _jsonl.flush()
 
 
+def _collect_finals():
+    """Falas finais consolidadas e confiáveis da transcrição persistida (Feature 006)."""
+    try:
+        from report import load_entries  # type: ignore
+        return load_entries(DATA_DIR / f"{SESSION_ID}.jsonl")
+    except Exception as e:
+        print(f"[api] resumo: sem entrada válida: {e}")
+        return []
+
+
 async def ack(websocket: "WebSocket", msg_id) -> None:
     if msg_id is None:
         return
@@ -134,6 +144,14 @@ if HAS_FASTAPI:
         return {"insight": out, "context": orch.ctx.window_text(6),
                 "session": orch.session_profile()}
 
+    @app.post("/end_session")
+    async def end_session():
+        """Encerra a sessão, gera o resumo Markdown e avisa todos os clientes."""
+        done = orch.end_session(_collect_finals()) if orch is not None else None
+        if done:
+            await broadcast(done)
+        return done or {"type": "session_end", "error": "no-session"}
+
     @app.websocket("/ws")
     async def ws(websocket: WebSocket):
         await websocket.accept()
@@ -149,6 +167,11 @@ if HAS_FASTAPI:
                 await ack(websocket, msg_id)
                 if msg.get("type") == "metrics":
                     await broadcast(msg)
+                    continue
+                if msg.get("type") == "end_session":
+                    done = orch.end_session(_collect_finals()) if orch is not None else None
+                    if done:
+                        await broadcast(done)
                     continue
                 speaker = msg.get("speaker", "OTHERS")
                 text = msg.get("text", "")

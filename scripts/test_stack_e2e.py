@@ -95,6 +95,19 @@ def main():
         _, h = req("GET", "/health")
         print("health session_profile:", h.get("session_profile"))
         assert h.get("session_profile") == last.get("session"), (h.get("session_profile"), last.get("session"))
+        print("== /end_session (resumo markdown, CA 7/8 no fluxo HTTP) ==")
+        status, end = req("POST", "/end_session", {})
+        print("end_session ->", end)
+        assert end and end.get("type") == "session_end", end
+        assert end.get("session_type") == "english_lesson", end
+        rp = end.get("report_path")
+        assert rp and rp.endswith("english-lesson.md"), rp
+        rp_abs = rp if os.path.isabs(rp) else os.path.join(os.environ["DATA_DIR"], os.path.basename(rp))
+        assert os.path.exists(rp_abs), rp_abs
+        txt = open(rp_abs, encoding="utf-8").read()
+        assert txt.startswith("# Resumo da Sessão\n"), txt[:200]
+        assert "## Vocabulário" in txt and "## Correções" in txt and "## Frases sugeridas" in txt, txt[:600]
+        print("md head:\n" + "\n".join(txt.splitlines()[:12]))
         sess = os.environ["DATA_DIR"]
         event_ids = set()
         for f in sorted(os.listdir(sess)):
