@@ -56,7 +56,8 @@ def test_model_row_aggregates_latency():
     assert m.calls == 2 * 2, m.calls               # modelo chamado p/ cada fixture x passes
     assert row["model"] == "fake-small"
     assert row["lang_acc"].startswith("2/2")
-    assert row["lat_p50_ms"] == 50 and row["lat_p95_ms"] == 50
+    assert 50 <= row["lat_p50_ms"] <= 55, row  # FakeModel.sleep(0.05) (+overhead de timing)
+    assert 50 <= row["lat_p95_ms"] <= 60, row
     assert row["wer_p"] != "" and row["coverage"] != ""
 
 

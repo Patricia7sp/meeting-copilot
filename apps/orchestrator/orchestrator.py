@@ -164,6 +164,48 @@ class Orchestrator:
     def session_profile(self) -> dict | None:
         return self.session.to_dict() if self.session is not None else None
 
+    def end_session(self, entries: list[dict] | None = None) -> dict | None:
+        """Gera e persiste o resumo Markdown da sessão (Feature 006).
+
+        `entries` são as falas finais consolidadas e confiáveis (extraídas da
+        transcrição persistida). Sem elas, usa a janela do tracker como fallback.
+        Responde `{"type":"session_end", session_id, report_path, ...}`; em
+        falha de IO devolve os metadados sem `report_path` (não quebra o pipeline).
+        """
+        if self.session is None:
+            return None
+        try:
+            from report import build_report, display_path, save_report  # type: ignore
+        except Exception:
+            return None
+        raw = entries if entries is not None else [dict(speaker=e["speaker"], text=e["text"],
+                                                        confidence=e.get("confidence"),
+                                                        duration_ms=e.get("duration_ms"))
+                                                   for e in self.session.window]
+        try:
+            from report import clean_entries  # type: ignore
+            finals = clean_entries(raw)
+        except Exception:
+            finals = [e for e in raw if (e.get("text") or "").strip()]
+        profile = dict(self.session.profile)
+        try:
+            md, _ended_at = build_report(session_id=self.session.session_id,
+                                         profile=profile, entries=finals)
+            path = save_report(self.session.directory, self.session.session_id,
+                               profile, md)
+            self.session.mark_ended()
+            report_path = display_path(path)
+        except OSError as e:
+            print(f"[orchestrator] falha ao salvar o resumo: {e}")
+            report_path = None
+        out: dict = {"type": "session_end",
+                     "session_id": self.session.session_id,
+                     "session_type": profile.get("type", "unknown"),
+                     "confidence": profile.get("confidence", 0.0)}
+        if report_path:
+            out["report_path"] = report_path
+        return out
+
     def _looks_like_class(self) -> bool:
         blob = self.ctx.window_text(6).lower()
         hits = sum(1 for pat in ["weekend", "verb", "tense", "pronunciation", "teacher",

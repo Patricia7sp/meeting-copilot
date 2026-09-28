@@ -158,6 +158,57 @@ def test_interval_and_fingerprint_gate():
     assert t.should_call(None) is False   # ainda dentro do intervalo mínimo
 
 
+# ---- Feature 006: mapeamento explícito dos TESTES 1..9 do dono (n1-n6 no núcleo;
+# n7/n8 em test_report.py; n9 na suíte WS/e2e). ----
+
+def test_n1_work_context_is_work_meeting():
+    o = orch()
+    feed(o, [TECH_1, TECH_2, TECH_3])
+    assert prof(o)["type"] == "work_meeting", prof(o)
+
+
+def test_n2_lesson_context_is_english_lesson():
+    o = orch()
+    feed(o, [EN_1, EN_2, EN_3])
+    assert prof(o)["type"] == "english_lesson", prof(o)
+
+
+def test_n3_vague_stays_unknown_then_general():
+    o = orch()
+    o.handle("YOU", GEN_1, confidence=0.9)          # contexto insuficiente
+    assert prof(o)["type"] == "unknown", prof(o)
+    feed(o, [GEN_2, GEN_3])
+    assert prof(o)["type"] == "general_conversation", prof(o)
+
+
+def test_n4_isolated_topic_change_keeps_type():
+    o = orch()
+    feed(o, [TECH_1, TECH_2, TECH_3])
+    assert prof(o)["type"] == "work_meeting"
+    o.handle("YOU", EN_1, confidence=0.9)           # 1 fala isolada
+    assert prof(o)["type"] == "work_meeting", prof(o)
+
+
+def test_n5_sustained_change_updates_type():
+    o = orch()
+    feed(o, [TECH_1, TECH_2, TECH_3])
+    assert prof(o)["type"] == "work_meeting"
+    o.handle("YOU", EN_1, confidence=0.9)
+    o.handle("YOU", EN_2, confidence=0.9)           # mudança sustentada
+    assert prof(o)["type"] == "english_lesson", prof(o)
+
+
+def test_n6_jev_failure_falls_back_local():
+    o = orch()
+    def boom(ctx, last):
+        raise RuntimeError("jev unavailable")
+    o.classifier = boom
+    out = feed(o, [TECH_1, TECH_2, TECH_3])
+    assert all(x["type"] in ("insight", "noop") for x in out)   # transcrição não para
+    assert prof(o)["type"] == "work_meeting"
+    assert prof(o)["source"] == "local"
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

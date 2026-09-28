@@ -44,8 +44,10 @@
       <option value="work">work</option>
     </select>
     <button id="connBtn" onclick="toggleWS()">conectar</button>
+    <button onclick="endSession()">encerrar+salvar</button>
   </span>
 </header>
+<div class="muted" id="report" hidden></div>
 <div class="muted">Ctrl+Shift+C copia a melhor frase do último card EN. Cards expiram em 60s (fixe com 📌). <span id="wsMetrics"></span></div>
 <div id="partial"></div>
 <div id="log"></div>
@@ -103,6 +105,19 @@ function onSession(s){
   elm.textContent = (SESSION_LABEL[s.type]||s.type)+' · '+Math.round((s.confidence||0)*100)+'%'+(s.source==='local'?' (local)':'');
   elm.hidden = false;
 }
+function onSessionEnd(d){
+  if(!d) return;
+  const elm = document.getElementById('report');
+  elm.textContent = 'Resumo salvo em '+(d.report_path||'(caminho desconhecido)');
+  elm.hidden = false;
+}
+function endSession(){
+  const url = (location.protocol === 'https:' ? 'https://' : 'http://') + (window.__COPILOT_HOST__ || location.host) + '/end_session';
+  fetch(url, {method:'POST'})
+    .then(r=>r.json())
+    .then(d=>{ if(d && d.type==='session_end') onSessionEnd(d); })
+    .catch(()=>{});
+}
 function addCoach(card, decision){
   lastSay = (card.say_this&&card.say_this[0])||'';
   const c = el('<b>EN diga:</b>'+card.say_this.map(s=>'<div class="say-opt">• '+esc(s)+'</div>').join('')
@@ -132,6 +147,7 @@ function connect(){
     if(m.type==='ack') return;
     if(m.type==='metrics'){ onMetrics(m); return; }
     if(m.type==='session'){ onSession(m.session); return; }
+    if(m.type==='session_end'){ onSessionEnd(m); return; }
     if(m.session) onSession(m.session);
     if(m.transcript) updateTranscript(m.transcript);
     const ins=m.insight;

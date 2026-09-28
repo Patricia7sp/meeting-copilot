@@ -104,6 +104,7 @@ class SessionTracker:
             "type": stype if stype in SESSION_TYPES else "unknown",
             "confidence": LOCAL_CONF["unknown"],
             "source": "local",
+            "started_at": _now_iso(),
             "updated_at": _now_iso(),
             "n_finals": 0,
             "classifications": 0,
@@ -208,6 +209,7 @@ class SessionTracker:
             "type": cand.type,
             "confidence": round(min(max(cand.confidence, 0.0), 1.0), 3),
             "source": cand.source,
+            "started_at": self.profile.get("started_at") or _now_iso(),
             "updated_at": _now_iso(),
             "n_finals": self._n_finals,
             "classifications": self._n_calls,
@@ -282,9 +284,15 @@ class SessionTracker:
                 if data.get("type") in SESSION_TYPES:
                     self.profile.update({k: data[k] for k in ("type", "confidence", "source")
                                          if k in data and data[k] is not None})
+                    self.profile["started_at"] = data.get("started_at") or _now_iso()
                     self.profile["updated_at"] = data.get("updated_at", _now_iso())
         except (OSError, ValueError):
             pass
+
+    def mark_ended(self) -> None:
+        """Marca o encerramento da sessão no perfil e persiste."""
+        self.profile["ended_at"] = _now_iso()
+        self._persist()
 
 
 def _tokens(text: str) -> list[str]:
