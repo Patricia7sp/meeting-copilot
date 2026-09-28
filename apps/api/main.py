@@ -1,5 +1,7 @@
 """API hub: recebe transcrição (STT ou simulador) e devolve insights via WS + HTTP."""
 from __future__ import annotations
+import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -21,6 +23,7 @@ except ImportError:
 
 MODE = os.getenv("ORCHESTRATOR_MODE", "auto")
 COOLDOWN = int(os.getenv("COOLDOWN_SECONDS", "4"))  # menor no MVP p/ demo
+SEND_TIMEOUT = float(os.getenv("SEND_TIMEOUT", "5.0"))  # cliente lento não segura o loop
 def _default_data_dir() -> Path:
     try:
         return Path(__file__).resolve().parents[2] / "data" / "sessions"  # repo local
@@ -88,16 +91,25 @@ async def ack(websocket: "WebSocket", msg_id) -> None:
 
 
 async def broadcast(payload: dict) -> None:
-    """Entrega eventos tanto ao STT quanto a todas as UIs conectadas."""
+    """Entrega eventos tanto ao STT quanto a todas as UIs conectadas.
+
+    Envio por cliente é limitado por `SEND_TIMEOUT`: um cliente lento (sem ler,
+    buffer de TCP cheio) NUNCA segura o event loop — sem o fix, um único cliente
+    lentro bloqueava o broadcast de todos (head-of-line) e clientes saudáveis
+    tomavam ping timeout. Cliente que estoura o tempo é descartado e desconectado
+    (o padrão do projeto é o cliente reconectar + reenviar pendentes).
+    """
     message = json.dumps(payload, ensure_ascii=False)
-    disconnected: list[WebSocket] = []
+    dead: list["WebSocket"] = []
     for client in tuple(clients):
         try:
-            await client.send_text(message)
-        except (RuntimeError, WebSocketDisconnect):
-            disconnected.append(client)
-    for client in disconnected:
+            await asyncio.wait_for(client.send_text(message), timeout=SEND_TIMEOUT)
+        except (RuntimeError, WebSocketDisconnect, asyncio.TimeoutError):
+            dead.append(client)
+    for client in dead:
         clients.discard(client)
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(client.close(), timeout=1.0)
 
 if HAS_FASTAPI:
     app = FastAPI(title="Meeting Copilot MVP")
