@@ -56,7 +56,7 @@ def test_broadcast_never_blocks_handler():
             # broadcast() é só agendamento O(1): nunca bloqueia o handler
             assert enqueue_s < 0.05, f"broadcast levou {enqueue_s:.2f}s"
 
-            while time.monotonic() - t0 < 3.0 and not fast.received:
+            while time.monotonic() - t0 < 3.0 and not (fast.received and slow not in api.clients):
                 await asyncio.sleep(0.01)
             elapsed = time.monotonic() - t0
             assert fast.received, "cliente saudável não recebeu o evento"
