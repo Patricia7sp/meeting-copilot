@@ -13,7 +13,8 @@
   .card.work { border-left:4px solid #60a5fa; }
   .card.you { border-left:4px solid #fbbf24; }
   .card.other { border-left:4px solid #60a5fa; }
-  .card.live { opacity:.85; }
+  .card.live { opacity:.85; border-left-style:dashed; }
+  .card.review { border-left-style:dashed; border-left-color:#ff6b6b; opacity:.9; background:#241b1b; }
   .muted { color:#999; font-size:12px; }
   button { background:#222; color:#eee; border:1px solid #444; border-radius:8px; padding:6px 10px; cursor:pointer; }
   .badge { display:inline-block; background:#333; color:#ccc; border-radius:4px; padding:1px 6px; font-size:11px; margin-left:4px; }
@@ -21,6 +22,7 @@
   .badge.conf { background:#33291e; color:#fbbf24; }
   .badge.warn { background:#3d2323; color:#ff6b6b; }
   .badge.stage { background:#252c3d; color:#8ab4ff; }
+  .badge.ghost { background:#2a2a2a; color:#777; }
   .translation { color:#9ca3af; font-style:italic; }
   #sess { display:inline-block; margin-left:8px; background:#1f2933; border:1px solid #2e3a45;
           border-radius:999px; padding:2px 10px; font-size:12px; color:#9fe3a4; }
@@ -47,8 +49,14 @@ function badges(t){
   if(t.language && t.language!=='unknown') b.push('<span class="badge lang">'+t.language+'</span>');
   if(t.confidence!=null) b.push('<span class="badge conf">'+(t.confidence*100|0)+'%</span>');
   if(t.low_confidence) b.push('<span class="badge warn">baixa confiança</span>');
-  if(t.stage==='provisional') b.push('<span class="badge stage">provisório</span>');
+  // item 7: capturado (provisório) / em revisão (final baixa conf.) / confirmado (final)
+  const s = t.status || (t.stage==='final' ? 'confirmado' : 'capturado');
+  const lbl = {capturado:'capturado', em_revisao:'em revisão', confirmado:'confirmado'}[s] || s;
+  if(t.stage==='provisional') b.push('<span class="badge stage ghost">provisório</span>');
   if(t.stage==='final') b.push('<span class="badge stage">final</span>');
+  if(s==='em_revisao') b.push('<span class="badge warn">'+lbl+'</span>');
+  else b.push('<span class="badge '+(s==='confirmado'?'lang':'stage')+'">'+lbl+'</span>');
+  if(t.rolling) b.push('<span class="badge stage">contínuo</span>');
   return b.join('');
 }
 
@@ -62,15 +70,17 @@ function keyOf(t){ return t.utterance_id != null ? 'u'+t.utterance_id : 's'+t.sp
 function onTranscript(t){
   const key = keyOf(t);
   const cls = t.speaker==='YOU'?'you':'other';
+  const mode = t.status==='em_revisao' ? (' '+cls+' review')
+             : (t.status==='capturado' || t.stage==='provisional') ? (' '+cls+' live') : ' '+cls;
   if (t.stage==='provisional'){
     let el = cards[key];
-    if(!el){ el = addCard(transCard(t), cls+' live'); cards[key]=el; }
-    else { el.className='card '+cls+' live'; el.innerHTML=transCard(t); }
+    if(!el){ el = addCard(transCard(t), mode); cards[key]=el; }
+    else { el.className='card'+mode; el.innerHTML=transCard(t); }
   } else {
     // final consolida a fala: substitui o card cursivo da MESMA utterance (um card só)
     const prior = cards[key];
     if (prior){ prior.remove(); delete cards[key]; }
-    if (key) cards[key]=addCard(transCard(t), cls);
+    if (key) cards[key]=addCard(transCard(t), mode);
   }
 }
 
@@ -125,12 +135,13 @@ function connect(){
 }
 
 function demo(){
-  onTranscript({speaker:'OTHERS', stage:'provisional', text:'What did you do during the', language:'en', confidence:0.71, low_confidence:false, rms:0.03});
-  onTranscript({speaker:'OTHERS', stage:'provisional', text:'What did you do during the weekend?', language:'en', confidence:0.88, low_confidence:false});
-  onTranscript({speaker:'OTHERS', stage:'final', text:'What did you do during the weekend?', language:'en', confidence:0.97, low_confidence:false});
-  onTranscript({speaker:'YOU', stage:'provisional', text:'Ontem eu fui ao mer', language:'pt', confidence:0.6, low_confidence:false});
-  onTranscript({speaker:'YOU', stage:'provisional', text:'Ontem eu fui ao mercado', language:'pt', confidence:0.8, low_confidence:false});
-  onTranscript({speaker:'YOU', stage:'final', text:'Ontem eu fui ao mercado.', language:'pt', confidence:0.95, low_confidence:false, translation:'Yesterday I went to the market.'});
+  onTranscript({speaker:'OTHERS', stage:'provisional', status:'capturado', text:'What did you do during the', language:'en', confidence:0.71, low_confidence:false, rms:0.03});
+  onTranscript({speaker:'OTHERS', stage:'provisional', status:'capturado', text:'What did you do during the weekend?', language:'en', confidence:0.88, low_confidence:false});
+  onTranscript({speaker:'OTHERS', stage:'final', status:'confirmado', text:'What did you do during the weekend?', language:'en', confidence:0.97, low_confidence:false});
+  onTranscript({speaker:'OTHERS', stage:'final', status:'em_revisao', text:'blah blah blah we do the thing the the', language:'en', confidence:0.21, low_confidence:true});
+  onTranscript({speaker:'YOU', stage:'provisional', status:'capturado', text:'Ontem eu fui ao mer', language:'pt', confidence:0.6, low_confidence:false});
+  onTranscript({speaker:'YOU', stage:'provisional', status:'capturado', text:'Ontem eu fui ao mercado', language:'pt', confidence:0.8, low_confidence:false});
+  onTranscript({speaker:'YOU', stage:'final', status:'confirmado', text:'Ontem eu fui ao mercado.', language:'pt', confidence:0.95, low_confidence:false, translation:'Yesterday I went to the market.'});
   onSession({type:'english_lesson', confidence:0.97, source:'jev'});
   addCard('<b>EN diga:</b><br>• I stayed home most of the weekend, but I went out on Sunday.<br><span class=muted>How about you? | Past simple: stayed/went</span>', 'say');
 }

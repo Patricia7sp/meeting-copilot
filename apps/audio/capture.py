@@ -38,6 +38,31 @@ class AudioSetup:
 
 
 @dataclass
+class AudioMeta:
+    """Configuração real da captura de UMA fonte (diagnóstico/benchmark).
+
+    Registra o que o dispositivo entregou (rate/canais nativos) e o que foi
+    produzido (16kHz mono do modelo), incluindo origem do locutor. `downmixed`
+    / `resampled` dizem se o PCM precisou de conversão explícita (ex.: BlackHole
+    estéreo 48kHz -> mono 16kHz).
+    """
+    source: str                       # "mic" | "loopback"
+    device: str | None = None         # nome do dispositivo (ex.: BlackHole 2ch)
+    device_rate: int | None = None    # samplerate NATIVO capturado
+    device_channels: int | None = None  # canais nativos (ex.: 2 do BlackHole)
+    out_rate: int = SAMPLE_RATE       # 16000 (o que o modelo consome)
+    out_channels: int = 1
+    chunk_seconds: float = CHUNK_SECONDS
+    n_samples: int = 0                # amostras mono16k no chunk
+    rms: float = 0.0                  # energia do PCM mono16k (0..1)
+    rms_db: float = -99.0             # dBFS do PCM mono16k
+    downmixed: bool = False           # estereo->mono aplicado
+    resampled: bool = False           # rate != 16000 resample aplicado
+    mock: bool = False                # sem backend de áudio (CI/teste)
+    active: bool = False              # device leu com sucesso
+
+
+@dataclass
 class SourceAudio:
     """Um pedaço de áudio de uma única fonte (mic ou loopback), 16kHz mono int16."""
     source: str      # "mic" | "loopback"
@@ -45,6 +70,7 @@ class SourceAudio:
     rms: float       # energia linear 0..1 (RMS sobre int16/full-scale)
     active: bool     # device abriu com sucesso nesta leitura (informação, não decisão)
     mock: bool = False  # sem backend de áudio (CI/teste): pcm é silêncio
+    meta: AudioMeta | None = None  # configuração real da captura (diagnóstico)
 
 
 def rms_of(pcm_or_arr) -> float:
@@ -68,6 +94,51 @@ def rms_db(rms: float) -> float:
     """RMS em dBFS (silêncio perto de -inf, fala ~ -30..-6 dB)."""
     import math
     return 20.0 * math.log10(max(rms, 1e-9))
+
+
+def to_mono16k(pcm: bytes, rate: int, channels: int) -> tuple[bytes, bool, bool]:
+    """Converte PCM int16 interleaved (rate, channels nativos) em mono 16kHz.
+
+    - Downmix de canais (ex.: BlackHole estéreo) pela média;
+    - Resample linear para 16k quando o dispositivo é 44.1/48k (fator inteiro
+      ou fracionário); fala é robusta a interpolação linear em ~3x.
+    Retorna `(pcm16k_mono, foi_downmixed, foi_resampled)`.
+
+    `rate == 16000 and channels == 1` é pass-through (sem cópia desnecessária).
+    """
+    import numpy as np
+    if channels < 1:
+        channels = 1
+    n = len(pcm) // 2 // channels
+    if n == 0:
+        return b"", channels > 1, rate != SAMPLE_RATE
+    a = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+    if a.size != n * channels:
+        a = a[: n * channels]
+    a = a.reshape(n, channels)
+    downmixed = channels > 1
+    mono = a.mean(axis=1) if downmixed else a[:, 0]
+    resampled = False
+    if rate != SAMPLE_RATE and rate > 0:
+        resampled = True
+        out_n = max(int(round(n * SAMPLE_RATE / rate)), 1)
+        if out_n == n:
+            resampled = False
+        else:
+            xs = np.arange(out_n) * (n - 1) / max(out_n - 1, 1)
+            mono = np.interp(xs, np.arange(n), mono)
+    mono = np.clip(np.rint(mono), -32768, 32767).astype(np.int16)
+    return mono.tobytes(), downmixed, resampled
+
+
+def write_wav(path, pcm16k: bytes, rate: int = SAMPLE_RATE) -> None:
+    """Grava PCM 16kHz mono int16 como WAV (16-bit, mono). Uso diagnóstico/benchmark."""
+    import wave
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm16k)
 
 
 class NoiseFloorCalibrator:
@@ -207,41 +278,73 @@ class Mixer:
     def read_sources(self, seconds: float = CHUNK_SECONDS) -> dict[str, SourceAudio]:
         """Captura mic + loopback como fontes SEPARADAS (mesmo instante, ~mesma duração).
 
-        Retorna {"mic": SourceAudio, "loopback": SourceAudio} com PCM, RMS e flag de
-        dispositivo ativo. Nenhuma decisão de locutor é tomada aqui — quem decide é o
-        STT, via energia/rms por fonte.
+        Cada fonte é aberta no rate/canais NATIVOS do dispositivo (ex.: BlackHole
+        estéreo 48kHz), lida `seconds`, e o PCM é convertido para 16kHz mono pela
+        média de canais + resample linear (`to_mono16k`). A configuração real de
+        cada captura (rate, canais, downmix/resample, RMS/dB, duração) fica em
+        `SourceAudio.meta` — nada de decisão de locutor aqui, quem decide é o STT
+        pela ORIGEM (mic->YOU, loopback->OTHERS).
         Sem backend de áudio: ambas as fontes voltam como silêncio (mock) p/ não quebrar CI.
         """
-        frames = int(self.samplerate * seconds)
         try:
             import numpy as np          # type: ignore
             import sounddevice as sd    # type: ignore
         except (ImportError, OSError):  # sem backend (ou PortAudio ausente) -> mock silencioso
 
             def _silent() -> bytes:
-                return b"\x00\x00" * frames
+                return b"\x00\x00" * int(self.samplerate * seconds)
 
-            return {
-                "mic": SourceAudio("mic", _silent(), 0.0, False, mock=True),
-                "loopback": SourceAudio("loopback", _silent(), 0.0, False, mock=True),
-            }
+            def _mk(name: str) -> SourceAudio:
+                return SourceAudio(name, _silent(), 0.0, False, mock=True,
+                                   meta=AudioMeta(source=name, mock=True))
+
+            return {"mic": _mk("mic"), "loopback": _mk("loopback")}
 
         def _silent() -> bytes:
-            return np.zeros((frames, 1), dtype=np.int16).tobytes()
+            return np.zeros((int(self.samplerate * seconds), 1), dtype=np.int16).tobytes()
+
+        def _dev_props(device) -> tuple[int, int, str]:
+            """(rate nativo, canais nativos, nome) do device de entrada."""
+            if device is None and sd.default.device[0] is not None:
+                device = sd.default.device[0]
+            try:
+                info = sd.query_devices(device, "input")
+                rate = int(info.get("default_samplerate") or SAMPLE_RATE)
+                ch = int(info.get("max_input_channels") or 1) or 1
+                return rate, ch, str(info.get("name") or device)
+            except Exception:
+                return SAMPLE_RATE, 1, str(device)
 
         def capture_device(name: str, device: int | str | None) -> SourceAudio:
             try:
+                rate, ch, dev_name = _dev_props(device)
                 with sd.InputStream(
-                    samplerate=self.samplerate,
-                    channels=1,
+                    samplerate=rate,
+                    channels=ch,
                     dtype="int16",
                     device=device,
                 ) as stream:
-                    arr, _overflowed = stream.read(frames)
+                    arr, _overflowed = stream.read(int(round(rate * seconds)))
+                raw = np.asarray(arr, dtype=np.int16).tobytes()
+                pcm16, downmixed, resampled = to_mono16k(raw, rate, ch)
+                rms = rms_of(pcm16)
+                return SourceAudio(
+                    name, pcm16, rms, True,
+                    meta=AudioMeta(
+                        source=name, device=dev_name, device_rate=rate,
+                        device_channels=ch, chunk_seconds=seconds,
+                        n_samples=len(pcm16) // 2, rms=rms, rms_db=rms_db(rms),
+                        downmixed=downmixed, resampled=resampled, active=True))
             except (sd.PortAudioError, ValueError) as error:
                 print(f"[audio][{name}] falhou ao abrir device={device!r}: {error}")
-                return SourceAudio(name, _silent(), 0.0, False)
-            return SourceAudio(name, arr.tobytes(), rms_of(arr), True)
+                return SourceAudio(name, _silent(), 0.0, False,
+                                   meta=AudioMeta(source=name, mock=True, active=False,
+                                                  chunk_seconds=seconds))
+            except Exception as error:  # nunca derruba a captura de outras fontes
+                print(f"[audio][{name}] erro inesperado device={device!r}: {error}")
+                return SourceAudio(name, _silent(), 0.0, False,
+                                   meta=AudioMeta(source=name, mock=True, active=False,
+                                                  chunk_seconds=seconds))
 
         devices = (("mic", self.mic_device), ("loopback", self.loopback_device))
         with ThreadPoolExecutor(max_workers=len(devices), thread_name_prefix="audio-capture") as pool:

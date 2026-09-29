@@ -51,6 +51,8 @@ PROVISIONAL_EVERY_SECONDS = float(os.getenv("PROVISIONAL_EVERY_SECONDS", "0.8"))
 PAUSE_SECONDS = float(os.getenv("PAUSE_SECONDS", "0.7"))        # silêncio real que encerra a fala
 MAX_UTTERANCE_SECONDS = float(os.getenv("MAX_UTTERANCE_SECONDS", "10.0"))  # refresh do provisório
 MAX_UTTERANCE_CAP_SECONDS = float(os.getenv("MAX_UTTERANCE_CAP_SECONDS", "120.0"))
+MAX_FINAL_SECONDS = float(os.getenv("MAX_FINAL_SECONDS", "12.0"))   # final contínuo 8-15s
+FINAL_OVERLAP_SECONDS = float(os.getenv("FINAL_OVERLAP_SECONDS", "1.0"))  # continuidade entre finais
 INITIAL_FLOOR_DB = float(os.getenv("INITIAL_FLOOR_DB", "-46"))   # mic (compat legado)
 INITIAL_FLOOR_DB_LOOPBACK = float(os.getenv("INITIAL_FLOOR_DB_LOOPBACK", "-58"))  # BlackHole é mais baixo
 SPEECH_DELTA_DB_MIC = float(os.getenv("SPEECH_DELTA_DB_MIC", "6"))
@@ -267,6 +269,7 @@ def load_model():
         print(f"{_LEVEL} modelo={MODEL} (cpu int8). frame={int(FRAME_SECONDS * 1000)}ms "
               f"overlap={OVERLAP_SECONDS}s window={WINDOW_SECONDS}s "
               f"pause={PAUSE_SECONDS}s max_utterance={MAX_UTTERANCE_SECONDS}s "
+              f"final_rolling={MAX_FINAL_SECONDS:.0f}s+{FINAL_OVERLAP_SECONDS}s "
               f"floor {INITIAL_FLOOR_DB}/{INITIAL_FLOOR_DB_LOOPBACK}dB(mic/loopback) "
               f"+{SPEECH_DELTA_DB_MIC}/{SPEECH_DELTA_DB_LOOPBACK}dB "
               f"log_prob_prev={LOG_PROB_THRESHOLD} final={LOG_PROB_THRESHOLD_FINAL} "
@@ -304,13 +307,16 @@ async def run_realtime(max_iter: int | None = None) -> None:
         provisional_every_seconds=PROVISIONAL_EVERY_SECONDS,
         window_seconds=WINDOW_SECONDS,
         frame_seconds=FRAME_SECONDS,
+        max_final_seconds=MAX_FINAL_SECONDS,
+        final_overlap_seconds=FINAL_OVERLAP_SECONDS,
         log=print,
     )
     print(f"{_LEVEL} capturando mic={MIC_DEVICE or 'default'} loopback={LOOPBACK_DEVICE or 'default'} "
           f"(frame {int(FRAME_SECONDS * 1000)}ms / overlap {OVERLAP_SECONDS}s / "
           f"pause {PAUSE_SECONDS}s / floor {INITIAL_FLOOR_DB}/{INITIAL_FLOOR_DB_LOOPBACK}dB "
           f"+{SPEECH_DELTA_DB_MIC}/{SPEECH_DELTA_DB_LOOPBACK}dB sinais histerese "
-          f"{SILENCE_DELTA_DB}dB)... Ctrl+C p/ parar.")
+          f"{SILENCE_DELTA_DB}dB / final contínuo {MAX_FINAL_SECONDS:.0f}s + "
+          f"{FINAL_OVERLAP_SECONDS}s overlap)... Ctrl+C p/ parar.")
     n = 0
     last_metrics = time.monotonic()
     try:

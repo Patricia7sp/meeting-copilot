@@ -68,13 +68,17 @@ function badges(t){
   if(t.language && t.language!=='unknown') b.push('<span style="color:#4ade80">'+t.language+'</span>');
   if(t.confidence!=null) b.push('<span style="color:#fbbf24">'+(t.confidence*100|0)+'%</span>');
   if(t.low_confidence) b.push('<span style="color:#ff6b6b">baixa conf</span>');
-  if(t.stage==='provisional') b.push('<span style="color:#8ab4ff">provisório</span>');
+  // item 7: capturado (provisório) / em revisão (final baixa conf.) / confirmado (final)
+  const s = t.status || (t.stage==='final' ? 'confirmado' : 'capturado');
+  const lbl = {capturado:'capturado', em_revisao:'em revisão', confirmado:'confirmado'}[s] || s;
+  b.push(s==='em_revisao' ? '<span style="color:#ff6b6b">'+lbl+'</span>'
+                          : '<span style="color:'+(s==='confirmado'?'#4ade80':'#8ab4ff')+'">'+lbl+'</span>');
   return b.join(' · ');
 }
 function keyOf(t){ return t.utterance_id != null ? 'u'+t.utterance_id : 's'+t.speaker; }
 const trCards = {};   // utterance_id -> card (provisório/final consolidam no MESMO card)
 function addTranscript(speaker, text){
-  const t = {speaker, text, utterance_id:null, stage:'provisional'};
+  const t = {speaker, text, utterance_id:null, stage:'provisional', status:'capturado'};
   updateTranscript(t);
 }
 function updateTranscript(t){
@@ -88,7 +92,8 @@ function updateTranscript(t){
   } else {
     const prior = trCards[key];
     if (prior){ prior.remove(); delete trCards[key]; }
-    if (key) trCards[key] = el('<b>'+esc(t.speaker)+'</b> '+esc(t.text)+' <span style="color:#999">['+(t.language||'')+' · '+Math.round(t.confidence*100)+'%]</span>'+(t.low_confidence?' <span style="color:#ff6b6b">baixa conf</span>':''), 'tr'+(t.low_confidence?' low':''));
+    const review = t.status==='em_revisao' || t.low_confidence;
+    if (key) trCards[key] = el('<b>'+esc(t.speaker)+'</b> '+esc(t.text)+' <span style="color:#999">['+(t.language||'')+' · '+Math.round(t.confidence*100)+'%]</span>'+(review?' <span style="color:#ff6b6b">em revisão · não entra no resumo</span>':''), 'tr'+(review?' low':''));
     if (trCards[key]) log.prepend(trCards[key]);
     trimLog();
   }

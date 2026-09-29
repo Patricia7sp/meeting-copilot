@@ -127,28 +127,80 @@ def test_silence_no_events():
     assert model.final_calls == 0
 
 
-def test_continuous_speech_60s_one_consolidated_final():
-    words = [f"w{i}" for i in range(200)]
-    model = WordStepper(words)
+class RollingWindowModel:
+    """Fake fiel ao rolling: cada `final` transcreve SÓ o áudio da janela (n palavras
+    por segundo + overlap de fronteira), como o Whisper real — impedindo que o teste
+    esconda lacunas por "devolver a frase inteira"."""
+    def __init__(self, words, words_per_sec=3.0, overlap_words=2):
+        self.words = [w for w in words]
+        self.wps = words_per_sec
+        self.overlap = overlap_words
+        self.offset = 0
+        self.prov = 0
+
+    def provisional(self, audio):
+        self.prov += 1
+        delivered = min(len(self.words), self.prov * 4)
+        start = max(0, delivered - self.overlap)
+        return (" ".join(self.words[start:delivered]),
+                {"lang": "en", "language_probability": 0.98,
+                 "confidence": 0.9, "low": False})
+
+    def final(self, audio):
+        dur = len(audio) / 2 / SAMPLE_RATE
+        n = int(round(dur * self.wps))
+        start = max(0, self.offset - self.overlap)
+        end = min(len(self.words), self.offset + n)
+        text = " ".join(self.words[start:end])
+        self.offset = end
+        return (text, {"lang": "en", "language_probability": 0.99,
+                       "confidence": 0.94, "low": False})
+
+
+def test_continuous_speech_60s_rolling_finals_with_overlap():
+    """Fala contínua 60s: finais rolling de ~12s (8–15s) com ~1s overlap; a pausa
+    real encerra a cauda. Nenhuma palavra se perde entre janelas; nenhum fragmento
+    ruim vira final."""
+    words = [f"w{i}" for i in range(140)]
+    model = RollingWindowModel(words, words_per_sec=3.0)
     seg = make_segmenter(model, max_utt=10.0, cap=120.0)
 
     prov_evs, now = feed_speech(seg, "mic", 60.0)
-    finals_during = [e for e in prov_evs if e.get("stage") == "final"]
-    assert finals_during == [], ("não deve finalizar durante fala contínua", finals_during)
+    rolling = [e for e in prov_evs if e.get("stage") == "final" and e.get("rolling")]
+    assert len(rolling) >= 3, ("final contínuo a cada ~12s", len(rolling))
+    for f in rolling:
+        assert 11_300 <= f["duration_ms"] <= 13_500, (f["discard_reason"], f["duration_ms"])
+        assert f["consolidated"] is True and f["speaker"] == "YOU"
+        assert f["overlap_seconds"] == 1.0
     prov_evs = [e for e in prov_evs if e.get("stage") == "provisional"]
     assert prov_evs, "deve emitir provisório durante a fala"
 
     fin_evs, _ = feed_silence(seg, "mic", 1.5, now=now)
-    finals = [e for e in fin_evs if e.get("stage") == "final"]
-    assert len(finals) == 1, ("um único final consolidado por enunciado", finals)
-    f = finals[0]
-    assert f["consolidated"] is True
-    assert f["speaker"] == "YOU"
-    assert f["text"] == model.expected
-    assert f["duration_ms"] >= 60_000 - 400, ("60s completos, sem lacunas", f["duration_ms"])
-    # provisório corretamente deduplicado: nenhuma palavra repetida/garada
-    last_prov = prov_evs[-1]["text"]
-    assert last_prov == model.expected, (last_prov, model.expected)
+    tail = [e for e in fin_evs if e.get("stage") == "final" and not e.get("rolling")]
+    assert len(tail) == 1, ("pausa real encerra a cauda num único final", tail)
+    assert tail[0]["rolling"] is False
+    # cobertura total: NENHUMA palavra do enunciado pode ficar de fora
+    joined_words = " ".join(f["text"] for f in rolling + tail).split()
+    assert set(joined_words) == set(words), ("cobertura de palavras", len(set(joined_words)))
+    # sem construir frases longas de fragmentos: cada final é uma janela legítima
+    assert all(f["text"].split() for f in rolling), "nenhum final vazio"
+    # a cauda finalizada por pausa pode ser curta (resto após o último rolling),
+    # mas nunca excede o max_final e cobre o fim da fala
+    assert 0 < tail[0]["duration_ms"] <= 13_500, tail[0]
+
+
+def test_final_below_max_final_stays_single_on_pause():
+    """Enunciado curto (sem chegar a 12s) continua sendo UM final único por pausa."""
+    words = ["the", "quick", "brown", "fox", "jumps", "over"]
+    model = WordStepper(words)
+    seg = make_segmenter(model, pause=0.7, max_utt=10.0, cap=60.0)
+    evs, now = feed_speech(seg, "mic", 5.0)
+    assert not any(e.get("stage") == "final" for e in evs), "ainda abaixo do rolling"
+    fin, _ = feed_silence(seg, "mic", 1.0, now=now)
+    finals = [e for e in fin if e.get("stage") == "final"]
+    assert len(finals) == 1 and not finals[0]["rolling"]
+    assert finals[0]["text"] == model.expected
+    assert 4_500 <= finals[0]["duration_ms"] <= 6_000, finals[0]
 
 
 def test_brief_dip_does_not_split_utterance():
