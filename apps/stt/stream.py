@@ -90,6 +90,8 @@ class Segmenter:
                  max_utterance_cap_seconds: float = 120.0,
                  provisional_every_seconds: float = 0.8,
                  window_seconds: float = 1.6, frame_seconds: float = 0.25,
+                 max_final_seconds: float = 12.0,
+                 final_overlap_seconds: float = 1.0,
                  log: Callable = print):
         self.gate = gate
         self.provisional = provisional
@@ -101,6 +103,8 @@ class Segmenter:
         self.provisional_every_seconds = provisional_every_seconds
         self.window_seconds = window_seconds
         self.frame_seconds = frame_seconds
+        self.max_final_seconds = max_final_seconds
+        self.final_overlap_seconds = max(final_overlap_seconds, 0.0)
         self.log = log
         self._states: dict[str, _SrcState] = {}
         self._utt_seq = itertools.count(1)
@@ -145,6 +149,19 @@ class Segmenter:
             if force and not st.finalized:
                 self.log(f"[stream] {src.source}: fala {st.utt_dur:.1f}s >= "
                          f"{self.max_utterance_seconds}s — refresh provisório (não finaliza)")
+        # final contínuo: chunk de 8–15s por fala contínua, com ~1s overlap p/
+        # continuidade. A pausa real (silêncio >= pause_seconds) continua sendo o
+        # finalizador imediato (todo o enunciado num final). Nunca é fragmento:
+        # cada final é re-transcrito do áudio acumulado do chunk.
+        if self.max_final_seconds > 0 and st.utt_dur >= self.max_final_seconds:
+            self.log(f"[stream] {src.source}: fala {st.utt_dur:.1f}s >= "
+                     f"{self.max_final_seconds}s — final contínuo (rolling, "
+                     f"overlap {self.final_overlap_seconds}s)")
+            fin = self._finalize(st, src, now, res, reason="rolling_max_final",
+                                 rolling=True)
+            if fin:
+                events.append(fin)
+                self._seed_overlap(st, now)
         if st.utt_dur >= self.max_utterance_cap_seconds:
             self.log(f"[stream] {src.source}: cap de memória "
                      f"{self.max_utterance_cap_seconds}s atingido; finalizando por cap")
@@ -223,7 +240,7 @@ class Segmenter:
     # ---------- final consolidado ----------
 
     def _finalize(self, st: _SrcState, src: SourceAudio, now: float,
-                  res: GateResult, *, reason: str) -> dict | None:
+                  res: GateResult, *, reason: str, rolling: bool = False) -> dict | None:
         if st.finalized or not st.rms_vals:
             return None
         st.finalized = True
@@ -261,8 +278,34 @@ class Segmenter:
             "noise_floor_db": round(res.floor_db, 1),
             "vad_ratio": round(float(res.vad_ratio), 3) if res.vad_ratio is not None else None,
             "discard_reason": reason,
+            "rolling": bool(rolling),
+            "overlap_seconds": round(self.final_overlap_seconds, 2) if rolling else 0,
             "translation": meta.get("translation"),
         }
+
+    def _seed_overlap(self, st: _SrcState, now: float) -> None:
+        """Planta o próximo enunciado com a cauda do final rolling (continuidade).
+
+        O final de 8–15s já saiu; o novo enunciado começa com os últimos
+        `final_overlap_seconds` do áudio (≈1s) para o próximo final encaixar sem
+        perder a fronteira. O `prov_len`/`last_prov_dur` também recomeçam a partir
+        dessa cauda, evitando reprocessar o restante do áudio já finalizado.
+        """
+        if self.final_overlap_seconds <= 0 or not st.utt_buf:
+            self._states.pop(st.source, None)
+            return
+        overlap_bytes = int(self.final_overlap_seconds * SAMPLE_RATE) * 2
+        tail = bytes(st.utt_buf[-overlap_bytes:]) if st.utt_buf else b""
+        ns = _SrcState(source=st.source)
+        ns.utterance_id = next(self._utt_seq)
+        ns.started_ts = now
+        ns.last_speech_ts = now
+        ns.speech = True
+        ns.utt_buf = bytearray(tail)
+        ns.utt_dur = len(tail) / 2 / SAMPLE_RATE
+        ns.prov_len = len(tail)
+        ns.last_prov_dur = ns.utt_dur
+        self._states[st.source] = ns
 
     def reset(self) -> None:
         self._states.clear()

@@ -16,15 +16,38 @@ python3 apps/stt/benchmark.py --run --models small,medium,large-v3-turbo
 # métricas por modelo: WER, cobertura, acurácia de idioma, latência p50/p95, uso de CPU
 ```
 
+[!] O parâmetro `--models` aceita também `distil-large-v3` (English-only).
 Medição rápida de latência/RTF por modelo (1 fixture): `apps/stt/bench.py`.
+
+## Benchmark por WAV do MESMO trecho de vídeo (YouTube → BlackHole) — Feature 007
+
+O critério de aceite (Feature 007) é com áudio REAL do YouTube saindo no BlackHole:
+
+```bash
+python3 apps/audio/diag_capture.py --seconds 60 --source loopback --ref transcricao_oficial.txt
+# grava data/bench/capture/loopback_<ts>.wav (mono 16k) + meta_<ts>.json +
+# salva a transcrição oficial em --ref (ou cole depois)
+python3 apps/stt/benchmark.py --wav data/bench/capture/loopback_<ts>.wav \
+    --ref transcricao_oficial.txt --meta data/bench/capture/meta_<ts>.json [--save data/bench/BENCH_REPORT.md]
+# roda small, medium, large-v3-turbo, distil-large-v3 e escolhe por WER/cobertura/p50/p95;
+# o relatório embute a config de áudio (rate/canais/downmix/resample/RMS) de evidência.
+```
+
+Meta do `0.` critério: **WER ≤ 15%** e **cobertura de fala > 85%** no trecho.
+Depois de escolher, fixe `WHISPER_MODEL=` no `.env`/`docker-compose` (STT roda no Mac).
 
 ## O que o service usa por default
 
 - `WHISPER_MODEL=small` (default em `service.py` e no `docker-compose.yml`).
   O WER não depende do tamanho aqui: a fidelidade é definida pelo pipeline
   (segmentação consolidada + entrega confiável + janelas), não pelo modelo.
-- Trocar p/ `medium`/`large` **depois** de confirmar no `bench.py` que há ganho
-  de qualidade que justifique a latência extra no seu fluxo.
+- Trocar p/ `medium`/`large`/`distil-large-v3` **depois** de o benchmark 007 com o
+  WAV do BlackHole eleger o modelo por evidência (WER/cobertura/p50/p95 no Mac).
+- Finais contínuos: `MAX_FINAL_SECONDS=12` (janela 8–15 s) com
+  `FINAL_OVERLAP_SECONDS=1` de sobreposição p/ continuar a aula; pausa real ≥ 0.7 s
+  continua encerrando o enunciado.
+- Finais abaixo de `MIN_FINAL_CONFIDENCE` (servidor, env `MIN_FINAL_CONFIDENCE=0.35`)
+  não entram no Jev/classificação/recomendações (só o resumo oficial filtra pelo `CONF_FLOOR`).
 
 ## Faixa esperada (referência, CPU):
 
@@ -81,15 +104,29 @@ senão, baixe para `medium` no `.env`/dar até o `bench.py` confirmar.
 5. **Provisório ao vivo**: janelas sobrepostas de ~`WINDOW_SECONDS=1.6s` sobre o
    enunciado, a cada `PROVISIONAL_EVERY_SECONDS=0.8s`, fronteira deduplicada
    (sobreposição por bytes + `dedup_delta` por texto), `condition_on_previous_text=False`.
-6. **UM `final` consolidado por enunciado**: `final` só sai com silêncio REAL ≥
-   `PAUSE_SECONDS=0.7s` (ou cap de memória `MAX_UTTERANCE_CAP_SECONDS=120s`).
-   `MAX_UTTERANCE_SECONDS=10s` só FORÇA refresh do provisório (janela de contexto
-   do whisper), nunca finaliza — 60s de fala contínua chegam em UM final sem lacunas.
-   O `final` re-transcreve o áudio inteiro do enunciado (`consolidated=True`,
+6. **UM `final` consolidado por enunciado**: `final` sai com silêncio REAL ≥
+   `PAUSE_SECONDS=0.7s` (encerra todo o enunciado), ou como **final contínuo
+   (rolling)** quando uma fala passa de `MAX_FINAL_SECONDS=12s` (janela 8–15 s):
+   finaliza a janela e planta o próximo enunciado com `FINAL_OVERLAP_SECONDS` de
+   cauda p/ continuidade — p/ aula de inglês via BlackHole não se perde fala e nunca
+   se consolida frase longa de fragmentos ruins. `MAX_UTTERANCE_SECONDS=10s` só
+   FORÇA refresh do provisório (janela de contexto do whisper), nunca finaliza;
+   `MAX_UTTERANCE_CAP_SECONDS=120s` é o cap de memória.
+   O `final` re-transcreve o áudio do enunciado/janela (`consolidated=True`,
    `condition_on_previous_text=True`, `LOG_PROB_THRESHOLD_FINAL=-1.0`) e é o texto
-   que gera insight.
+   que gera insight. Cada final traz `rolling`/`overlap_seconds` para a UI.
 7. **WS com ack confiável**: client envia com `event_id` (run_id + seq) e `id`;
    usa fila com backpressure (nunca descarta), reenvio com
    `retry_backoff` e retries ilimitados por default, remove do pendente só com ack;
    persistência em `data/ws_pending/` com `event_id` idempotente no servidor.
    Ao final sai relatório `sent/acked/ack_timeout/drops/reconnects/lat p50/p95`.
+8. **Atribuição por origem (não energia) no servidor também**: `source` mic→YOU,
+   loopback→OTHERS; o servidor deriva o locutor do `source` mesmo se o client
+   mandar `speaker` ocupado.
+9. **Gate de confiança do servidor (Feature 007)**: finais com `low_confidence` ou
+   `confidence < MIN_FINAL_CONFIDENCE` viram `status=em_revisao` e NÃO chamam o
+   Jev/classificação/recomendações (orchestrator já noopa < 0.5); o resumo oficial
+   segue filtrando pelo `CONF_FLOOR` do report.
+10. **UI 3 estados (Feature 007)**: `capturado` (provisório, card tracejado),
+    `em_revisao` (final abaixo do limiar, vermelho tracejado), `confirmado`
+    (final confiável, card sólido). Provisório nunca parece final.

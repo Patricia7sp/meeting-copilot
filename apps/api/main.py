@@ -26,6 +26,9 @@ except ImportError:
 MODE = os.getenv("ORCHESTRATOR_MODE", "auto")
 COOLDOWN = int(os.getenv("COOLDOWN_SECONDS", "4"))  # menor no MVP p/ demo
 SEND_TIMEOUT = float(os.getenv("SEND_TIMEOUT", "5.0"))  # cliente lento não segura o loop
+# Finais abaixo deste limiar NÃO entram no Jev/classificação/recomendações (só resumo
+# oficial continua filtrando pelo CONF_FLOOR do report). Configurável por env.
+MIN_FINAL_CONFIDENCE = float(os.getenv("MIN_FINAL_CONFIDENCE", "0.35"))
 def _default_data_dir() -> Path:
     try:
         return Path(__file__).resolve().parents[2] / "data" / "sessions"  # repo local
@@ -58,6 +61,30 @@ def _note_seen(msg_id) -> bool:
     if len(_seen_ids) > _SEEN_MAX:
         _seen_ids.clear()
     return False
+
+
+def _speaker_from_source(msg: dict) -> str:
+    """Atribuição por ORIGEM do áudio (não por energia): mic -> YOU, loopback -> OTHERS."""
+    src = msg.get("source")
+    if src == "mic":
+        return "YOU"
+    if src == "loopback":
+        return "OTHERS"
+    return msg.get("speaker", "OTHERS")
+
+
+def _below_threshold(low: bool, confidence) -> bool:
+    # confidence=None: passa (orch.handle trata None pass-through, como sempre fez);
+    # finais com confiança explícita abaixo do limiar ficam fora do Jev/recomendações.
+    return bool(low or (confidence is not None
+                        and MIN_FINAL_CONFIDENCE > 0 and confidence < MIN_FINAL_CONFIDENCE))
+
+
+def _status_for(stage: str, conf_below: bool) -> str:
+    """capturado (provisório) / em_revisao (final abaixo do limiar) / confirmado (final)."""
+    if stage != "final":
+        return "capturado"
+    return "em_revisao" if conf_below else "confirmado"
 
 
 def persist(speaker: str, text: str, out: dict, lang: str = "unknown",
@@ -159,7 +186,7 @@ if HAS_FASTAPI:
 
     @app.post("/ingest")
     def ingest(payload: dict):
-        speaker = payload.get("speaker", "OTHERS")
+        speaker = _speaker_from_source(payload)
         text = payload.get("text", "")
         lang = payload.get("language", payload.get("lang", "unknown"))
         confidence = payload.get("confidence")
@@ -170,8 +197,12 @@ if HAS_FASTAPI:
         consolidated = bool(payload.get("consolidated", True))
         msg_id = payload.get("id")
         event_id = payload.get("event_id")
-        # insights só quando a fala está consolidada (final) e não repete id
-        if stage == "final" and consolidated and not _note_seen(event_id or msg_id):
+        below = _below_threshold(low, confidence)
+        status = _status_for(stage, below)
+        # insights/classificação só quando a fala está consolidada, confiável e não repete id
+        if stage == "final" and consolidated and below:
+            out = {"type": "noop", "reason": "low_confidence"}
+        elif stage == "final" and consolidated and not _note_seen(event_id or msg_id):
             out = orch.handle(speaker, text, lang, confidence=confidence,
                               low_confidence=low, duration_ms=duration_ms)
         else:
@@ -179,6 +210,7 @@ if HAS_FASTAPI:
                 "not-consolidated" if not consolidated else "id-duplicated")
             out = {"type": "noop", "reason": reason}
         out.setdefault("session", orch.session_profile())
+        out["status"] = status
         persist(speaker, text, out or {}, lang=lang, confidence=confidence,
                 low_confidence=low, translation=translation, msg_id=msg_id,
                 event_id=event_id, stage=stage, consolidated=consolidated)
@@ -214,7 +246,8 @@ if HAS_FASTAPI:
                     if done:
                         broadcast(done)
                     continue
-                speaker = msg.get("speaker", "OTHERS")
+                speaker = _speaker_from_source(msg)
+                source = msg.get("source")
                 text = msg.get("text", "")
                 stage = msg.get("stage", "final")
                 consolidated = bool(msg.get("consolidated", True))
@@ -223,16 +256,21 @@ if HAS_FASTAPI:
                 low = bool(msg.get("low_confidence", False))
                 translation = msg.get("translation")
                 duration_ms = msg.get("duration_ms")
+                below = _below_threshold(low, confidence)
+                status = _status_for(stage, below)
                 dedup_key = msg.get("event_id") or msg_id
                 if stage != "final" or not consolidated or _note_seen(dedup_key):
                     reason = ("provisional" if stage != "final"
                               else ("not-consolidated" if not consolidated else "id-duplicated"))
                     out = {"type": "noop", "reason": reason}
+                elif below:
+                    out = {"type": "noop", "reason": "low_confidence"}
                 else:
                     out = orch.handle(speaker, text, lang,
                                       confidence=confidence, low_confidence=low,
                                       duration_ms=duration_ms)
                 out.setdefault("session", orch.session_profile())
+                out["status"] = status
                 prof = out.get("session")
                 if isinstance(prof, dict) and prof.get("changed"):
                     broadcast({"type": "session", "session": prof,
@@ -244,10 +282,14 @@ if HAS_FASTAPI:
                 broadcast(
                     {"transcript": {"id": msg_id, "event_id": msg.get("event_id"),
                                     "utterance_id": msg.get("utterance_id"),
+                                    "source": msg.get("source"),
                                     "stage": stage, "consolidated": consolidated,
+                                    "status": status,
                                     "speaker": speaker, "text": text, "language": lang,
                                     "confidence": confidence, "low_confidence": low,
                                     "translation": translation,
+                                    "rolling": bool(msg.get("rolling", False)),
+                                    "overlap_seconds": msg.get("overlap_seconds", 0),
                                     "provisional_ids": msg.get("provisional_ids", [])},
                      "insight": out,
                      "rec": True}
