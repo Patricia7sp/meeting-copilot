@@ -4,7 +4,8 @@ __pycache__/
 data/sessions/*.jsonl
 data/sessions/*.md
 data/sessions/*_session.json
-!.gitkeep
+data/bench/*
+!data/bench/.gitkeep
 .reversa/
 _reversa_sdd/
 _reversa_forward/

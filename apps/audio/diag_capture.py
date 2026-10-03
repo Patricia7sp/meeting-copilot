@@ -61,14 +61,23 @@ def main():
     args = ap.parse_args()
 
     if not 30 <= args.seconds <= 120:
-        print(f"duração deve ficar em 30..120s (obtido {args.sources})")
+        print(f"duração deve ficar em 30..120s (obtido {args.seconds})")
         sys.exit(2)
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    mixer = Mixer()
+    # Mesmo contrato do apps/stt/service.py: sem device explícito as DUAS fontes
+    # caem no device default (o mic) e o "loopback" sairia com a sua voz.
+    mixer = Mixer(loopback_device=os.getenv("LOOPBACK_DEVICE"),
+                  mic_device=os.getenv("MIC_DEVICE"))
     chosen = ("mic", "loopback") if args.source == "both" else (args.source,)
+    if args.source in ("both", "loopback") and not mixer.loopback_device:
+        print("[diag] AVISO: LOOPBACK_DEVICE não definido — 'loopback' vai gravar o "
+              "device default (mic). Exporte LOOPBACK_DEVICE='BlackHole 2ch' para "
+              "capturar o áudio do sistema.")
+    if args.source in ("both", "mic") and not mixer.mic_device:
+        print("[diag] AVISO: MIC_DEVICE não definido — 'mic' vai gravar o device default.")
 
     bufs: dict[str, bytearray] = {name: bytearray() for name in chosen}
     metas: dict[str, AudioMeta] = {}
@@ -128,9 +137,17 @@ def main():
     meta_path = out / f"meta_{ts}.json"
     meta_path.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"[diag] meta: {meta_path.resolve()}")
-    print("[diag] benchmark: python3 apps/stt/benchmark.py --wav "
-          + " ".join(report["sources"][n]["wav"] for n in report["sources"])
-          + f" --ref {args.ref or '<transcricao-oficial.txt>'} --models small,medium,large-v3-turbo,distil-large-v3 --save apps/stt/BENCH_REPORT.md")
+    # --wav aceita UM arquivo por vez: emite um comando por fonte gravada.
+    # loopback é a fonte do trecho de vídeo (a que o benchmark deve usar).
+    for name in ("loopback", "mic"):
+        if name not in report["sources"]:
+            continue
+        print(f"[diag] benchmark {name}: python3 apps/stt/benchmark.py "
+              f"--wav {report['sources'][name]['wav']} "
+              f"--meta {meta_path.resolve()} "
+              f"--ref {args.ref or '<transcricao-oficial.txt>'} "
+              f"--models small,medium,large-v3-turbo,distil-large-v3 "
+              f"--passes 3 --save apps/stt/BENCH_REPORT_{name}.md")
 
 
 if __name__ == "__main__":
